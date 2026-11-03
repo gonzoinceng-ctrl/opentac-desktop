@@ -82,7 +82,13 @@ export async function createCoreIntegration(
   const controller = createController({
     paths,
     log,
-    initialState: { ...defaultState(), remoteUrl: fixture.mirrorUrl },
+    // Pin the summary provider to OpenAI so no AI gateway is started in these flows
+    // (the product default is Ollama; gateway behaviour has its own unit tests).
+    initialState: {
+      ...defaultState(),
+      remoteUrl: fixture.mirrorUrl,
+      ai: { provider: 'openai', model: null, ollamaHost: null },
+    },
     saveState: (s) => saveState(paths.stateFile, s),
     checkout,
     install,
