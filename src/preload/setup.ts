@@ -8,9 +8,13 @@ import type { IpcRendererEvent } from 'electron';
 import { IPC } from '../shared/ipc.js';
 import type {
   ActionName,
+  AppSettingsPatch,
+  ClearEngineKeyPayload,
   OpenTacSetupApi,
   Prefs,
   PublicState,
+  SaveEngineKeyPayload,
+  SaveEngineSettingsPayload,
   SetAiKeyPayload,
   SetAiPayload,
 } from '../shared/ipc.js';
@@ -34,6 +38,12 @@ const api: OpenTacSetupApi = {
   setAi: (payload: SetAiPayload) => ipcRenderer.invoke(IPC.setAi, payload),
   setAiKey: (payload: SetAiKeyPayload) => ipcRenderer.invoke(IPC.setAiKey, payload),
   testAi: () => ipcRenderer.invoke(IPC.testAi),
+  setAppSettings: (patch: AppSettingsPatch) => ipcRenderer.invoke(IPC.setAppSettings, patch),
+  getEngineKeys: () => ipcRenderer.invoke(IPC.getEngineKeys),
+  saveEngineKey: (payload: SaveEngineKeyPayload) => ipcRenderer.invoke(IPC.saveEngineKey, payload),
+  clearEngineKey: (payload: ClearEngineKeyPayload) => ipcRenderer.invoke(IPC.clearEngineKey, payload),
+  getEngineSettings: () => ipcRenderer.invoke(IPC.getEngineSettings),
+  saveEngineSettings: (payload: SaveEngineSettingsPayload) => ipcRenderer.invoke(IPC.saveEngineSettings, payload),
   listOllamaModels: () => ipcRenderer.invoke(IPC.listOllamaModels),
 };
 

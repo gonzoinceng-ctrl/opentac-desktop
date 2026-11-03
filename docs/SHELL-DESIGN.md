@@ -196,6 +196,10 @@ Setup window only:
 - `setAi({ provider, model, ollamaHost })` and `setAiKey({ provider: 'openrouter'|'xai', key })`
   (key goes straight to `secrets.ts`, never echoed back; `getAiStatus()` reports only `hasKey`).
 - `testAi()` → `AiTestResult`.
+- Settings (section 14): `setAppSettings(patch)`, `getEngineKeys()`, `saveEngineKey({ values })`,
+  `clearEngineKey({ id })`, `getEngineSettings()`, `saveEngineSettings({ patch })`. `PublicState` also
+  carries `app`, `engineKeys` and `engineSettings`. Two more action names: `openDataFolder` (handled
+  in `ipc.ts` like `showLogs`) and `forgetUsbDevices` (controller, with a confirm dialog).
 - `listOllamaModels()` → names from `GET <ollamaHost>/api/tags` (10 s timeout) or an error string.
 
 Main window only: nothing beyond the shared surface.
@@ -236,8 +240,8 @@ summary provider is active, the engine's OpenAI key row is locked; switch back t
 
 Plain TypeScript, no framework, one `index.html` with panels toggled by `phase`:
 `progress` (phase title, determinate/indeterminate bar, streaming log tail with auto-scroll and
-a pause-on-scroll-up), `disclosure`, `crash`, `error`, `about`, `preferences` (tabs: General,
-Engine channel, AI), `usb-picker.html` (separate page). First screen carries the attribution line
+a pause-on-scroll-up), `disclosure`, `crash`, `error`, `about`, `preferences` (tabs: General, Updates,
+API keys, AI summaries, Engine settings, App settings), `usb-picker.html` (separate page). First screen carries the attribution line
 and the honest first-run copy ("downloading the God's Eye View source (~200 MB) and its
 dependencies (~400 MB) from GitHub and npm"). Strict CSP meta `default-src 'self'; style-src
 'self'; img-src 'self' data:`. Accessibility: labelled controls, focus order, Esc closes
@@ -258,3 +262,80 @@ Preferences/About, buttons reachable by keyboard.
   main window URL matches `http://127.0.0.1:\d+/`, `<canvas>` exists on the fake page,
   `window.openTac.getVersions()` resolves, external link opens no new window, menu-driven
   "Check for Engine Updates" shows the disclosure, quit leaves no child process.
+
+## 14. Settings (`engineKeys.ts`, `envSettings.ts`, `src/shared/appSettings.ts`, Preferences tabs)
+
+Preferences is the one place to enter every key and setting. Each kind is stored where its consumer
+reads it, and the shell never keeps a second copy:
+
+| What | Store | Writer |
+|---|---|---|
+| The 11 engine registry keys | engine `.env` | the **engine** (`POST /api/setup/keys`), relayed by `engineKeys.ts` |
+| Engine settings (voice, limits, feeds, CCTV, Ontario 511 key) | engine `.env` | the **shell** (`envSettings.ts`), then an engine restart |
+| App settings, channel, summary provider | `state.json` (`app` object) | the shell, immediately |
+| OpenRouter and xAI keys | `secrets.json` (`safeStorage`) | the shell (`setAiKey`) |
+
+**Engine keys** (`src/main/engineKeys.ts`). `createEngineKeysClient({ engineUrl, fetchImpl?, log })` has
+`status()` (`GET /api/setup/status`, parsed to `{ keys, setCount, total, store }`) and
+`save(updates)` (`POST /api/setup/keys`, body `{ ENV_VAR: value | null }`, null removes). Both send
+`Origin: http://127.0.0.1:<port>` (upstream's `admitKeySetupRequest` demands the exact local origin on a
+POST) and the POST sends `Content-Type: application/json`. A `409 { code: 'external' }` ("managed outside
+Provider Settings") becomes a plain sentence; other refusal codes map to sentences too. Values only ever
+travel in the request body; results hold booleans, ids and sentences. The list is **not** hard-coded:
+what the engine reports is shown (so it tracks the engine version). `ENGINE_KEY_CATALOG` (ids, titles,
+env var names) is used only (a) for the static fallback shown while the engine is not running, with
+set/unset read from the names of non-empty variables in `.env` via `envFileKeys`, and (b) to add the one
+row the engine hides from its status (`google-maps-server`) under "Advanced keys". Rows with
+`managed: 'external'` are **Locked**; the OpenAI row gets the placeholder explanation (DECISIONS "Engine
+contract drift") when the summary provider is not OpenAI. After a successful save the engine restarts
+itself about 250 ms later and the child process **does not exit**: the controller makes no phase change
+(nothing can reach CRASHED), updates the row optimistically and polls the status quietly until the
+engine answers again.
+
+**Engine settings** (`src/shared/engineSettingsCatalog.ts`, re-exported by `src/main/envSettings.ts`).
+`ENGINE_SETTINGS_CATALOG: SettingGroup[]` (Voice, Spend and rate limits, Data feeds, CCTV cameras) lists
+typed settings (`string | number | boolean | enum | list | url | secret`, enum options, default,
+min/max, placeholder, `requiresRestart`) with descriptions taken from upstream's `.env.example`, plus a
+region table for every `CCTV_<REGION>_*` variable (one row per region: enabled checkbox, camera cap,
+optional URL and districts). Never offered: the 11 registry variables, `HOST`, `PORT`,
+`GEV_ALLOWED_HOSTS`, `GEV_KEY_SETUP_TRUSTED_PEERS`, `GEV_EMBED_FRAME_ANCESTORS`, `VITE_*` and
+`CCTV_SOURCES_FILE/JSON`, `CCTV_PREFER_AUSTIN`, `CCTV_FORCE_AUSTIN`, the two Vegvesen sub-switches.
+`validateSetting(key, value)` returns `{ ok: true, value }` (normalised: booleans to the setting's own
+`1/0` or `true/false`, numbers canonical) or `{ ok: false, reason }`; every value rejects control
+characters and the dotenv metacharacters (hash, both quote marks, dollar sign, backslash and backtick), so what is written is what the engine reads
+back. `writeEngineSettings(envFile, patch)` mirrors upstream's `upsertDotenvValues`: replace the last
+active assignment in place, else uncomment the last commented one, else append under a header; a `null`
+comments every active assignment out as `# KEY=`; every other line and comment (including the registry
+lines) is preserved byte for byte; atomic tmp + fsync + rename, mode 0600, refuses to write through a
+symlink, all-or-nothing validation, writes serialised. A `''` value is an assignment, not a clear, only
+where upstream defines empty as "off" (`PHOTON_URL`, the Caltrans and TxDOT districts). Secret-typed
+values (`ONTARIO_511_API_KEY`) are read back as `''` with a `set` flag. The controller's
+`saveEngineSettings` writes, refreshes `PublicState.engineSettings`, logs the **names** changed (never
+values) and, when RUNNING, restarts the engine (RESTARTING, STARTING, RUNNING; Vite and the engine read
+`.env` at start); in any other phase it only writes and says the settings apply at the next start.
+
+**App settings** (`state.json` `app`, schema version stays 1; missing fields fill from defaults,
+`validateState` checks them). `launchAtLogin` calls an injected function (index.ts:
+`app.setLoginItemSettings`, packaged builds only). `autoRestartOnCrash` (default on) gates the single
+automatic restart. `updateCheckInterval` is `launch-only` (no interval; resume and focus checks skipped),
+`6h` (default) or `daily` (24 h interval and rate limit); changing it replaces the timer live.
+`logLevel` is `default | error | warn | info | debug`, read from `state.json` before the logger exists
+and applied at the next launch by `resolveLogLevels(env, isPackaged, setting)`: `OPENTAC_LOG_LEVEL` wins,
+then the setting, then the defaults. `proxy` is `{ httpsProxy, noProxy }` (http(s) URL without
+credentials): it reaches the engine child as `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` and
+`NODE_USE_ENV_PROXY=1` (`buildServerEnv`'s `proxy` option; those names are reserved so `extra` cannot set
+them), and the git runner and the npm install manager as `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` through a
+`proxyEnv()` hook read on every call. Git and npm use a change at once; the engine at its next start.
+`engineRemoteUrl` (https:// or file:// only, no credentials) overrides the mirror and is read **once at
+launch**, so it takes effect at the next launch; `OPENTAC_ENGINE_REMOTE` still wins. The tab shows
+"Only change this to point at your own mirror; the default is the OpenTac mirror." and a Reset-to-default
+button. Maintenance buttons: Open data folder, Open logs folder, Forget remembered USB devices (confirm,
+clears the controller copy and the index.ts list), Reinstall dependencies and Reset engine files (two-step
+buttons; Reset is enabled only in ERROR, where the controller honours it).
+
+**Renderer.** Pure helpers in `view.ts` (`keyRowState`, `settingFieldModel`, `regionRowModels`,
+`buildSettingsPatch`, ...) are unit tested; `setup.ts` builds key rows once per id set and updates them in
+place so typing is never lost on a state push, and builds the engine settings groups once from the
+catalogue. Every input has a label or `aria-label`; Esc closes Preferences. Key rows save per row (Save,
+Clear, Show/Hide); engine settings have one Save per group with the visible note "Saving restarts the
+engine to apply the settings."; app settings save on change (text fields have a Save button).

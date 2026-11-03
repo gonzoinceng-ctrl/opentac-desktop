@@ -109,17 +109,30 @@
         <h2 id="prefs-title" tabindex="-1">Preferences</h2>
         <div class="tabs" role="tablist" aria-label="Preferences sections">
           <button type="button" role="tab" id="tab-general" aria-controls="tabpanel-general" aria-selected="true" tabindex="0">General</button>
-          <button type="button" role="tab" id="tab-channel" aria-controls="tabpanel-channel" aria-selected="false" tabindex="-1">Engine channel</button>
-          <button type="button" role="tab" id="tab-ai" aria-controls="tabpanel-ai" aria-selected="false" tabindex="-1">AI</button>
+          <button type="button" role="tab" id="tab-channel" aria-controls="tabpanel-channel" aria-selected="false" tabindex="-1">Updates</button>
+          <button type="button" role="tab" id="tab-keys" aria-controls="tabpanel-keys" aria-selected="false" tabindex="-1">API keys</button>
+          <button type="button" role="tab" id="tab-ai" aria-controls="tabpanel-ai" aria-selected="false" tabindex="-1">AI summaries</button>
+          <button type="button" role="tab" id="tab-engine" aria-controls="tabpanel-engine" aria-selected="false" tabindex="-1">Engine settings</button>
+          <button type="button" role="tab" id="tab-app" aria-controls="tabpanel-app" aria-selected="false" tabindex="-1">App settings</button>
         </div>
 
         <div id="tabpanel-general" class="tabpanel" role="tabpanel" aria-labelledby="tab-general">
+          <h3>Where settings live</h3>
+          <p class="muted small">Every key and setting is entered here, in one place. Each one is stored where the part that uses it expects to find it.</p>
+          <ul id="settings-map" class="plain-list settings-map"></ul>
+          <h3>Troubleshooting</h3>
+          <div class="button-row left">
+            <button type="button" id="btn-show-logs">Show logs</button>
+          </div>
+        </div>
+
+        <div id="tabpanel-channel" class="tabpanel" role="tabpanel" aria-labelledby="tab-channel" hidden>
           <h3>Engine updates</h3>
           <label class="check">
             <input type="checkbox" id="pref-update-on-launch" />
-            <span>Check for engine updates when OpenTac starts</span>
+            <span>Check for engine updates automatically</span>
           </label>
-          <p class="muted small">Engine updates are never applied without showing you what changes first.</p>
+          <p class="muted small">Engine updates are never applied without showing you what changes first. How often the automatic check runs is set under App settings.</p>
           <div class="button-row left">
             <button type="button" id="btn-check-engine">Check for engine updates now</button>
           </div>
@@ -128,13 +141,6 @@
           <div class="button-row left">
             <button type="button" id="btn-check-app">Check for OpenTac updates</button>
           </div>
-          <h3>Troubleshooting</h3>
-          <div class="button-row left">
-            <button type="button" id="btn-show-logs">Show logs</button>
-          </div>
-        </div>
-
-        <div id="tabpanel-channel" class="tabpanel" role="tabpanel" aria-labelledby="tab-channel" hidden>
           <fieldset class="radios">
             <legend>Which engine versions should OpenTac follow?</legend>
             <label class="radio">
@@ -154,9 +160,43 @@
           <p class="muted small">Changing the channel checks for an update straight away. Moving to an older version asks you to reset the engine files first.</p>
         </div>
 
-        <div id="tabpanel-ai" class="tabpanel" role="tabpanel" aria-labelledby="tab-ai" hidden>
+        <div id="tabpanel-keys" class="tabpanel" role="tabpanel" aria-labelledby="tab-keys" hidden>
+          <h3>Engine API keys</h3>
+          <p id="keys-note" class="banner banner-info" role="note" hidden></p>
+          <p class="muted small">These are saved by the engine itself in its own .env file, on this Mac only, readable only by you. Every key is optional.</p>
+          <p id="keys-restart-note" class="note">Saving a key makes the engine restart itself and reload the page. That is expected, not a crash.</p>
+          <p id="keys-summary" class="muted small" role="status"></p>
+          <ul id="keys-list" class="key-list" aria-label="Engine API keys"></ul>
+          <details id="keys-advanced" hidden>
+            <summary>Advanced keys</summary>
+            <ul id="keys-list-advanced" class="key-list" aria-label="Advanced engine API keys"></ul>
+          </details>
+
+          <h3>OpenTac AI summaries</h3>
           <p id="ai-encryption" class="banner banner-warn" role="note" hidden>Encryption is unavailable on this Mac right now, so OpenTac cannot store API keys. Ollama and OpenAI still work.</p>
-          <p class="muted small">This only changes the provider for the short summary line in the engine's heads-up display.</p>
+          <p class="muted small">These two keys are for the optional summary providers in the AI summaries tab. OpenTac keeps them encrypted in its own data folder, never in the engine's .env file.</p>
+          <div class="field" id="ai-key-openrouter">
+            <label for="key-openrouter">OpenRouter API key</label>
+            <div class="inline">
+              <input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" maxlength="512" />
+              <button type="button" id="btn-save-key-openrouter">Save key</button>
+              <button type="button" id="btn-clear-key-openrouter">Remove key</button>
+            </div>
+            <p id="state-key-openrouter" class="muted small" role="status"></p>
+          </div>
+          <div class="field" id="ai-key-xai">
+            <label for="key-xai">xAI API key</label>
+            <div class="inline">
+              <input type="password" id="key-xai" autocomplete="off" spellcheck="false" maxlength="512" />
+              <button type="button" id="btn-save-key-xai">Save key</button>
+              <button type="button" id="btn-clear-key-xai">Remove key</button>
+            </div>
+            <p id="state-key-xai" class="muted small" role="status"></p>
+          </div>
+        </div>
+
+        <div id="tabpanel-ai" class="tabpanel" role="tabpanel" aria-labelledby="tab-ai" hidden>
+          <p class="muted small">This only changes the provider for the short summary line in the engine's heads-up display. OpenRouter and xAI keys are entered under API keys.</p>
 
           <div class="field">
             <label for="ai-provider">Summary provider</label>
@@ -183,25 +223,6 @@
             <p class="muted small">Models are loaded from the address that is saved, so save your settings first after changing it.</p>
           </div>
 
-          <div class="field" id="ai-key-openrouter">
-            <label for="key-openrouter">OpenRouter API key</label>
-            <div class="inline">
-              <input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" maxlength="512" />
-              <button type="button" id="btn-save-key-openrouter">Save key</button>
-              <button type="button" id="btn-clear-key-openrouter">Remove key</button>
-            </div>
-            <p id="state-key-openrouter" class="muted small" role="status"></p>
-          </div>
-          <div class="field" id="ai-key-xai">
-            <label for="key-xai">xAI API key</label>
-            <div class="inline">
-              <input type="password" id="key-xai" autocomplete="off" spellcheck="false" maxlength="512" />
-              <button type="button" id="btn-save-key-xai">Save key</button>
-              <button type="button" id="btn-clear-key-xai">Remove key</button>
-            </div>
-            <p id="state-key-xai" class="muted small" role="status"></p>
-          </div>
-
           <p id="ai-restart-note" class="note">Saving a different provider restarts the engine.</p>
           <div class="button-row left">
             <button type="button" id="btn-save-ai" class="primary">Save AI settings</button>
@@ -218,6 +239,81 @@
             <li>Voice control uses OpenAI or Gemini — configure those in the engine's POWER UP panel.</li>
             <li>While a non-OpenAI summary provider is active, the engine's OpenAI key row is locked; switch back to OpenAI to edit it.</li>
           </ul>
+        </div>
+
+        <div id="tabpanel-engine" class="tabpanel" role="tabpanel" aria-labelledby="tab-engine" hidden>
+          <p class="muted small">These settings are written to the engine's .env file, which the engine reads when it starts. Leave a field empty to keep the engine's own default. Saving a group restarts the engine.</p>
+          <div id="engine-groups"></div>
+        </div>
+
+        <div id="tabpanel-app" class="tabpanel" role="tabpanel" aria-labelledby="tab-app" hidden>
+          <p class="muted small">These are OpenTac's own settings. Switches and menus save as soon as you change them.</p>
+
+          <h3>Behaviour</h3>
+          <label class="check">
+            <input type="checkbox" id="app-launch-at-login" />
+            <span>Open OpenTac when I log in</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="app-auto-restart" />
+            <span>Restart the engine automatically after a crash</span>
+          </label>
+          <p class="muted small">At most one automatic restart per minute. With this off, the crash screen offers a Restart button.</p>
+          <div class="field">
+            <label for="app-update-interval">Check for engine updates</label>
+            <select id="app-update-interval"></select>
+            <p class="muted small">Only applies when automatic checks are on under Updates.</p>
+          </div>
+
+          <h3>Logging</h3>
+          <div class="field">
+            <label for="app-log-level">Log level</label>
+            <select id="app-log-level"></select>
+            <p class="muted small">Takes effect the next time OpenTac starts. The OPENTAC_LOG_LEVEL variable, if set, wins.</p>
+          </div>
+
+          <h3>Network proxy</h3>
+          <div class="field">
+            <label for="app-proxy-https">Proxy address</label>
+            <input type="text" id="app-proxy-https" placeholder="http://proxy.example.com:8080" autocomplete="off" spellcheck="false" maxlength="512" />
+          </div>
+          <div class="field">
+            <label for="app-proxy-no">Addresses that skip the proxy</label>
+            <input type="text" id="app-proxy-no" placeholder="localhost,127.0.0.1,.internal.example" autocomplete="off" spellcheck="false" maxlength="512" />
+          </div>
+          <p class="muted small" id="app-proxy-note"></p>
+          <div class="button-row left">
+            <button type="button" id="btn-save-proxy">Save proxy</button>
+          </div>
+          <p id="app-proxy-status" class="muted small" role="status"></p>
+
+          <h3>Engine mirror (advanced)</h3>
+          <p class="banner banner-warn" role="note">Only change this to point at your own mirror; the default is the OpenTac mirror.</p>
+          <div class="field">
+            <label for="app-engine-remote">Engine mirror address</label>
+            <input type="text" id="app-engine-remote" placeholder="Default: the OpenTac mirror" autocomplete="off" spellcheck="false" maxlength="512" />
+          </div>
+          <p class="muted small">Must start with https:// or file://. Takes effect the next time OpenTac starts.</p>
+          <div class="button-row left">
+            <button type="button" id="btn-save-remote">Save mirror address</button>
+            <button type="button" id="btn-reset-remote">Reset to default</button>
+          </div>
+          <p id="app-remote-status" class="muted small" role="status"></p>
+
+          <h3>Folders and maintenance</h3>
+          <div class="button-row left">
+            <button type="button" id="btn-open-data">Open data folder</button>
+            <button type="button" id="btn-open-logs">Open logs folder</button>
+          </div>
+          <div class="button-row left">
+            <button type="button" id="btn-forget-usb">Forget remembered USB devices</button>
+          </div>
+          <div class="button-row left">
+            <button type="button" id="btn-reinstall">Reinstall dependencies</button>
+            <button type="button" id="btn-reset-engine">Reset engine files</button>
+          </div>
+          <p id="app-maint-note" class="muted small"></p>
+          <p id="app-status" class="muted small" role="status"></p>
         </div>
 
         <div class="button-row">

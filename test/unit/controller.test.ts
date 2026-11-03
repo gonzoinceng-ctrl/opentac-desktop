@@ -22,6 +22,8 @@ import {
   type ControllerDeps,
   type ShellController,
 } from '../../src/main/controller.js';
+import { EngineKeysError } from '../../src/main/engineKeys.js';
+import type { EngineKeysClient } from '../../src/main/engineKeys.js';
 import { GitError } from '../../src/main/git.js';
 import { InstallError } from '../../src/main/install.js';
 import type { Paths } from '../../src/main/paths.js';
@@ -83,7 +85,20 @@ interface HarnessOptions {
   dataDir?: string;
   fetchImpl?: typeof fetch;
   gatewayFails?: boolean;
+  engineKeys?: EngineKeysClient;
+  setLoginItem?: (open: boolean) => void;
+  forgetUsbDevices?: () => void;
+  readEngineSettings?: ControllerDeps['readEngineSettings'];
+  writeEngineSettings?: ControllerDeps['writeEngineSettings'];
 }
+
+/** Default engine key client for tests: the engine never answers, so nothing touches the network. */
+const SILENT_ENGINE_KEYS: EngineKeysClient = {
+  status: async () => {
+    throw new EngineKeysError('unreachable', "The engine didn't answer the key list request.");
+  },
+  save: async () => ({ ok: false, restarting: false, code: 'unreachable', message: 'no engine in this test' }),
+};
 
 function fakePaths(dataDir: string): Paths {
   const checkoutDir = join(dataDir, 'checkout');
@@ -134,6 +149,9 @@ function makeHarness(o: HarnessOptions = {}): Harness {
     installedNodeVersion: '24.22.2',
     lastSuccessfulStart: new Date(BASE_TIME - 86_400_000).toISOString(),
     lastPort: 4173,
+    // The harness pins the provider to OpenAI so the gateway tests start from "no gateway"
+    // regardless of the product default (Ollama); tests that need another provider override it.
+    ai: { provider: 'openai', model: null, ollamaHost: null },
     ...o.state,
   });
   const deps: ControllerDeps = {
@@ -181,6 +199,12 @@ function makeHarness(o: HarnessOptions = {}): Harness {
     requestQuit: () => {
       quits.count += 1;
     },
+    engineKeys: o.engineKeys ?? SILENT_ENGINE_KEYS,
+    envFileKeys: async () => new Set<string>(),
+    readEngineSettings: o.readEngineSettings ?? (async () => ({ values: {}, set: {} })),
+    writeEngineSettings: o.writeEngineSettings ?? (async () => undefined),
+    ...(o.setLoginItem !== undefined ? { setLoginItem: o.setLoginItem } : {}),
+    ...(o.forgetUsbDevices !== undefined ? { forgetUsbDevices: o.forgetUsbDevices } : {}),
     ...(o.fetchImpl !== undefined ? { fetchImpl: o.fetchImpl } : {}),
   };
   const controller = createController(deps);
@@ -1607,5 +1631,467 @@ describe('shutdown', () => {
     h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
     await flush();
     expect(h.server.starts).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settings: app settings, engine .env settings, engine keys
+// ---------------------------------------------------------------------------
+
+describe('app settings', () => {
+  it('publicState carries the defaults and setAppSettings persists a change', async () => {
+    const h = await boot();
+    expect(h.controller.publicState().app).toEqual({
+      launchAtLogin: false,
+      autoRestartOnCrash: true,
+      updateCheckInterval: '6h',
+      logLevel: 'default',
+      proxy: { httpsProxy: null, noProxy: null },
+      engineRemoteUrl: null,
+    });
+    const before = h.saved.length;
+    await h.controller.setAppSettings({ logLevel: 'debug', proxy: { httpsProxy: 'http://proxy.example:8080' } });
+    expect(h.saved.length).toBeGreaterThan(before);
+    expect(h.saved.at(-1)?.app.logLevel).toBe('debug');
+    expect(h.saved.at(-1)?.app.proxy.httpsProxy).toBe('http://proxy.example:8080');
+    expect(h.controller.publicState().app.logLevel).toBe('debug');
+    expect(h.controller.state().schemaVersion).toBe(1);
+  });
+
+  it('launchAtLogin calls the injected login-item function only when it changes', async () => {
+    const calls: boolean[] = [];
+    const h = await boot({ setLoginItem: (open) => calls.push(open) });
+    await h.controller.setAppSettings({ launchAtLogin: true });
+    await h.controller.setAppSettings({ launchAtLogin: true });
+    await h.controller.setAppSettings({ autoRestartOnCrash: false });
+    await h.controller.setAppSettings({ launchAtLogin: false });
+    expect(calls).toEqual([true, false]);
+    expect(h.controller.state().app.launchAtLogin).toBe(false);
+  });
+
+  it('a login-item failure keeps the setting and shows a notice instead of throwing', async () => {
+    const h = await boot({
+      setLoginItem: () => {
+        throw new Error('denied');
+      },
+    });
+    await h.controller.setAppSettings({ launchAtLogin: true });
+    expect(h.controller.state().app.launchAtLogin).toBe(true);
+    expect(h.controller.publicState().notices.join(' ')).toContain('launch-at-login');
+  });
+
+  it('rejects an invalid patch and leaves the settings unchanged', async () => {
+    const h = await boot();
+    await expect(h.controller.setAppSettings({ proxy: { httpsProxy: 'socks5://x:1' } })).rejects.toThrow(/proxy address/);
+    await expect(h.controller.setAppSettings({ engineRemoteUrl: 'http://insecure.example/x.git' })).rejects.toThrow(/https:\/\/ or file:\/\//);
+    expect(h.controller.state().app).toEqual(h.controller.publicState().app);
+    expect(h.controller.state().app.proxy.httpsProxy).toBeNull();
+  });
+
+  it('autoRestartOnCrash false: a crash stays CRASHED with no automatic restart', async () => {
+    const h = await boot({ state: { app: { ...stateWith().app, autoRestartOnCrash: false } } });
+    h.server.emit({ type: 'exit', code: 3, signal: null, expected: false });
+    await flush();
+    expect(h.controller.phase()).toBe('CRASHED');
+    expect(h.server.starts).toHaveLength(1);
+    expect(h.logs.join('\n')).toContain('switched off in App settings');
+    await h.controller.action('restartServer');
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.starts).toHaveLength(2);
+  });
+
+  it('autoRestartOnCrash can be switched off while running and back on', async () => {
+    const h = await boot();
+    await h.controller.setAppSettings({ autoRestartOnCrash: false });
+    h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
+    await flush();
+    expect(h.controller.phase()).toBe('CRASHED');
+    await h.controller.action('restartServer');
+    await h.controller.setAppSettings({ autoRestartOnCrash: true });
+    await h.clock.advance(AUTO_RESTART_GUARD_MS + 1);
+    h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
+    await flush();
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('updateCheckInterval 6h (default): launch, shell and a 6 h interval', async () => {
+    const h = await boot();
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS, CHECK_INTERVAL_MS]);
+  });
+
+  it('updateCheckInterval daily: the interval is 24 h and checks are rate limited to a day', async () => {
+    const h = await boot({ state: { app: { ...stateWith().app, updateCheckInterval: 'daily' } } });
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS, DAY]);
+    await h.clock.advance(LAUNCH_CHECK_DELAY_MS);
+    expect(h.update.checks).toHaveLength(1);
+    await h.clock.advance(CHECK_INTERVAL_MS + 1000);
+    expect(h.update.checks).toHaveLength(1); // 6 h later is not due on a daily schedule
+    h.controller.notifyResume();
+    await flush();
+    expect(h.update.checks).toHaveLength(1);
+    await h.clock.advance(DAY);
+    expect(h.update.checks.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('updateCheckInterval daily: a check 10 hours ago is not repeated at launch', async () => {
+    const h = await boot({
+      state: { app: { ...stateWith().app, updateCheckInterval: 'daily' }, lastUpdateCheck: new Date(BASE_TIME - 10 * 3600_000).toISOString() },
+    });
+    await h.clock.advance(LAUNCH_CHECK_DELAY_MS + 1000);
+    expect(h.update.checks).toHaveLength(0);
+  });
+
+  it('updateCheckInterval launch-only: no interval, and resume and focus do not check', async () => {
+    const h = await boot({ state: { app: { ...stateWith().app, updateCheckInterval: 'launch-only' } } });
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS]);
+    await h.clock.advance(LAUNCH_CHECK_DELAY_MS);
+    expect(h.update.checks).toHaveLength(1);
+    await h.clock.advance(CHECK_INTERVAL_MS * 3);
+    h.controller.notifyResume();
+    h.controller.notifyMainFocus();
+    await flush();
+    expect(h.update.checks).toHaveLength(1);
+  });
+
+  it('changing the interval while running replaces the timer', async () => {
+    const h = await boot();
+    await h.controller.setAppSettings({ updateCheckInterval: 'launch-only' });
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS]);
+    await h.controller.setAppSettings({ updateCheckInterval: 'daily' });
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS, DAY]);
+    await h.controller.setAppSettings({ updateCheckInterval: '6h' });
+    expect(h.clock.pendingDelays()).toEqual([LAUNCH_CHECK_DELAY_MS, SHELL_CHECK_DELAY_MS, CHECK_INTERVAL_MS]);
+  });
+
+  it('the engine mirror override is read once at launch (takes effect at next launch)', async () => {
+    const h = await boot({ state: { app: { ...stateWith().app, engineRemoteUrl: 'https://mirror.example.org/engine.git' } } });
+    expect((await h.controller.versions()).engine.remote).toBe('https://mirror.example.org/engine.git');
+    await h.controller.setAppSettings({ engineRemoteUrl: 'file:///Users/me/other.git' });
+    expect(h.controller.state().app.engineRemoteUrl).toBe('file:///Users/me/other.git');
+    expect((await h.controller.versions()).engine.remote).toBe('https://mirror.example.org/engine.git');
+    await h.controller.setAppSettings({ engineRemoteUrl: null });
+    expect(h.controller.state().app.engineRemoteUrl).toBeNull();
+  });
+
+  it('a packaged build rejects a file:// mirror and ignores a hand-edited one at launch', async () => {
+    const h = await boot({ isPackaged: true });
+    await expect(h.controller.setAppSettings({ engineRemoteUrl: 'file:///Users/me/other.git' })).rejects.toThrow(/development builds/);
+    await h.controller.setAppSettings({ engineRemoteUrl: 'https://mirror.example.org/engine.git' });
+    const g = await boot({ isPackaged: true, state: { app: { ...stateWith().app, engineRemoteUrl: 'file:///Users/me/other.git' } } });
+    expect((await g.controller.versions()).engine.remote).not.toBe('file:///Users/me/other.git');
+  });
+
+  it('OPENTAC_ENGINE_REMOTE still wins over the App settings mirror', async () => {
+    const h = await boot({
+      env: { OPENTAC_ENGINE_REMOTE: 'https://ci.example.org/x.git' },
+      state: { app: { ...stateWith().app, engineRemoteUrl: 'https://mirror.example.org/engine.git' } },
+    });
+    expect((await h.controller.versions()).engine.remote).toBe('https://ci.example.org/x.git');
+  });
+
+  it('passes the proxy to the engine start options only when one is set', async () => {
+    const plain = await boot();
+    expect(plain.server.starts[0]?.proxy).toBeUndefined();
+    const h = await boot({
+      state: { app: { ...stateWith().app, proxy: { httpsProxy: 'http://proxy.example:8080', noProxy: 'localhost' } } },
+    });
+    expect(h.server.starts[0]?.proxy).toEqual({ httpsProxy: 'http://proxy.example:8080', noProxy: 'localhost' });
+  });
+
+  it('forgetUsbDevices clears the devices after the user confirms', async () => {
+    let cleared = 0;
+    const h = await boot({
+      state: { usbDevices: [{ vendorId: 1, productId: 2, serialNumber: 'S' }] },
+      forgetUsbDevices: () => {
+        cleared += 1;
+      },
+    });
+    h.ui.confirmAnswer = false;
+    await h.controller.action('forgetUsbDevices');
+    expect(cleared).toBe(0);
+    expect(h.controller.state().usbDevices).toHaveLength(1);
+    h.ui.confirmAnswer = true;
+    await h.controller.action('forgetUsbDevices');
+    expect(cleared).toBe(1);
+    expect(h.controller.state().usbDevices).toEqual([]);
+    expect(h.saved.at(-1)?.usbDevices).toEqual([]);
+  });
+
+  it('openDataFolder is a no-op in the controller (the IPC layer opens the folder)', async () => {
+    const h = await boot();
+    await h.controller.action('openDataFolder');
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+});
+
+describe('engine settings (.env)', () => {
+  it('saving while RUNNING writes the patch, goes RESTARTING then RUNNING and refreshes the view', async () => {
+    const writes: Array<Record<string, string | null>> = [];
+    let stored: { values: Record<string, string>; set: Record<string, boolean> } = { values: {}, set: {} };
+    const h = await boot({
+      readEngineSettings: async () => stored,
+      writeEngineSettings: async (_f, patch) => {
+        writes.push(patch);
+        stored = { values: { OPENAI_REALTIME_VOICE: 'cedar' }, set: { OPENAI_REALTIME_VOICE: true } };
+      },
+    });
+    const result = await h.controller.saveEngineSettings({ patch: { OPENAI_REALTIME_VOICE: 'cedar' } });
+    expect(result).toMatchObject({ ok: true, restarting: true, invalid: {} });
+    expect(result.message).toBe('Restarting the engine to apply settings…');
+    expect(writes).toEqual([{ OPENAI_REALTIME_VOICE: 'cedar' }]);
+    expect(h.controller.phase() === 'RESTARTING' || h.controller.phase() === 'RUNNING').toBe(true);
+    await waitFor(() => h.controller.phase() === 'RUNNING' && h.server.starts.length === 2);
+    expect(h.phases.slice(-3)).toEqual(['RESTARTING', 'STARTING', 'RUNNING']);
+    expect(h.server.stops).toBeGreaterThanOrEqual(1);
+    expect(h.controller.publicState().engineSettings.values['OPENAI_REALTIME_VOICE']).toBe('cedar');
+    // Names are logged, values are not.
+    expect(h.logs.join('\n')).toContain('engine settings saved: OPENAI_REALTIME_VOICE');
+    expect(h.logs.join('\n')).not.toContain('cedar');
+  });
+
+  it('a refused patch reports the reasons and does not restart', async () => {
+    const { EnvSettingsError } = await import('../../src/main/envSettings.js');
+    const h = await boot({
+      writeEngineSettings: async () => {
+        throw new EnvSettingsError('Nothing was saved. Enter a number.', { CCTV_MAX_SOURCES: 'Enter a number.' });
+      },
+    });
+    const result = await h.controller.saveEngineSettings({ patch: { CCTV_MAX_SOURCES: 'many' } });
+    expect(result).toEqual({
+      ok: false,
+      restarting: false,
+      invalid: { CCTV_MAX_SOURCES: 'Enter a number.' },
+      message: 'Nothing was saved. Enter a number.',
+    });
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.starts).toHaveLength(1);
+  });
+
+  it('an unexpected write failure becomes a plain sentence', async () => {
+    const h = await boot({
+      writeEngineSettings: async () => {
+        throw new Error('EIO: boom /secret/path');
+      },
+    });
+    const result = await h.controller.saveEngineSettings({ patch: { CCTV_MAX_SOURCES: '5' } });
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe('OpenTac could not write the engine .env file, so nothing was saved.');
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+
+  it('outside RUNNING it only writes and says when the settings apply', async () => {
+    const h = await boot();
+    h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
+    await flush();
+    await h.clock.advance(1_000);
+    h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
+    await flush();
+    expect(h.controller.phase()).toBe('CRASHED');
+    const starts = h.server.starts.length;
+    const result = await h.controller.saveEngineSettings({ patch: { CCTV_MAX_SOURCES: '5' } });
+    expect(result).toMatchObject({ ok: true, restarting: false });
+    expect(result.message).toContain('next time the engine starts');
+    expect(h.server.starts).toHaveLength(starts);
+    expect(h.controller.phase()).toBe('CRASHED');
+  });
+
+  it('round-trips through the real .env writer and keeps the engine keys intact', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'opentac-ctl-env-'));
+    try {
+      await mkdir(join(dir, 'checkout'), { recursive: true });
+      await writeFile(join(dir, 'checkout', '.env'), 'GOOGLE_MAPS_API_KEY=AIzaKeep\n# my note\n', { mode: 0o600 });
+      const envMod = await import('../../src/main/envSettings.js');
+      const h = await boot({
+        dataDir: dir,
+        readEngineSettings: envMod.readEngineSettingsPublic,
+        writeEngineSettings: envMod.writeEngineSettings,
+      });
+      const r = await h.controller.saveEngineSettings({ patch: { TOMTOM_DAILY_TILE_BUDGET: '5000', ONTARIO_511_API_KEY: 'on-key-1' } });
+      expect(r.ok).toBe(true);
+      await waitFor(() => h.controller.phase() === 'RUNNING' && h.server.starts.length === 2);
+      const text = await readFile(join(dir, 'checkout', '.env'), 'utf8');
+      expect(text).toContain('GOOGLE_MAPS_API_KEY=AIzaKeep\n# my note\n');
+      expect(text).toContain('TOMTOM_DAILY_TILE_BUDGET=5000');
+      const pub = h.controller.publicState().engineSettings;
+      expect(pub.values['TOMTOM_DAILY_TILE_BUDGET']).toBe('5000');
+      expect(pub.set['ONTARIO_511_API_KEY']).toBe(true);
+      expect(JSON.stringify(h.controller.publicState())).not.toContain('on-key-1');
+      expect(JSON.stringify(h.controller.publicState())).not.toContain('AIzaKeep');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+class FakeEngineKeys implements EngineKeysClient {
+  statusCalls = 0;
+  saves: Array<Record<string, string | null>> = [];
+  /** Throw from status() while true (the engine is restarting itself). */
+  down = false;
+  external = new Set<string>();
+  values = new Map<string, string>();
+  saveResult: { ok: boolean; restarting: boolean; code: string | null; message: string | null } = {
+    ok: true,
+    restarting: true,
+    code: null,
+    message: null,
+  };
+  private readonly registry = [
+    { id: 'aisstream', title: 'AISSTREAM', envVars: ['AISSTREAM_API_KEY'], tier: 'free', clientExposed: false },
+    { id: 'openai', title: 'OPENAI', envVars: ['OPENAI_API_KEY'], tier: 'metered', clientExposed: false },
+    { id: 'opensky', title: 'OPENSKY', envVars: ['OPENSKY_CLIENT_ID', 'OPENSKY_CLIENT_SECRET'], tier: 'free', clientExposed: false },
+  ];
+  async status() {
+    this.statusCalls += 1;
+    if (this.down) throw new EngineKeysError('unreachable', "The engine didn't answer the key list request.");
+    const keys = this.registry.map((r) => {
+      const set = r.envVars.every((v) => (this.values.get(v) ?? '') !== '' || this.external.has(v));
+      const external = r.envVars.some((v) => this.external.has(v));
+      return {
+        ...r,
+        unlocks: `${r.title} things`,
+        getUrl: 'https://example.org/key',
+        envVars: [...r.envVars],
+        tier: r.tier as 'free' | 'metered',
+        set,
+        managed: set ? (external ? ('external' as const) : ('file' as const)) : null,
+      };
+    });
+    return { keys, setCount: keys.filter((k) => k.set).length, total: keys.length, store: 'env-file' };
+  }
+  async save(updates: Record<string, string | null>) {
+    this.saves.push(updates);
+    if (this.saveResult.ok) for (const [n, v] of Object.entries(updates)) this.values.set(n, v ?? '');
+    return this.saveResult;
+  }
+}
+
+describe('engine keys', () => {
+  it('lists the live registry once the engine is RUNNING and shows a fallback before', async () => {
+    const keys = new FakeEngineKeys();
+    const h = makeHarness({ engineKeys: keys });
+    live.push(h);
+    expect(h.controller.publicState().engineKeys.source).toBe('fallback');
+    expect(h.controller.publicState().engineKeys.note).toContain('once the engine is running');
+    await h.controller.start();
+    await waitFor(() => h.controller.publicState().engineKeys.source === 'engine');
+    const list = h.controller.publicState().engineKeys;
+    expect(list.keys.map((k) => k.id)).toEqual(['aisstream', 'openai', 'opensky', 'google-maps-server']);
+    expect(list.keys.at(-1)).toMatchObject({ advanced: true, set: false });
+    expect(list.note).toBeNull();
+  });
+
+  it('getEngineKeys falls back to the catalogue with a plain note when the engine does not answer', async () => {
+    const keys = new FakeEngineKeys();
+    keys.down = true;
+    const h = await boot({ engineKeys: keys });
+    const list = await h.controller.getEngineKeys();
+    expect(list.source).toBe('fallback');
+    expect(list.note).toContain("didn't answer");
+    expect(list.keys).toHaveLength(11);
+    expect(list.keys.every((k) => k.managed === null && k.set === false)).toBe(true);
+  });
+
+  it('saveEngineKey sends the values, marks the row set and never leaves RUNNING or reaches CRASHED', async () => {
+    const keys = new FakeEngineKeys();
+    const h = await boot({ engineKeys: keys });
+    await h.controller.getEngineKeys();
+    h.phases.length = 0;
+    const secret = 'sk-live-0123456789abcdef';
+    keys.down = true; // the engine refuses connections while it restarts itself
+    const result = await h.controller.saveEngineKey({ values: { AISSTREAM_API_KEY: secret } });
+    expect(result).toEqual({ ok: true, restarting: true, code: null, message: null });
+    expect(keys.saves).toEqual([{ AISSTREAM_API_KEY: secret }]);
+    expect(h.controller.phase()).toBe('RUNNING');
+    const row = h.controller.publicState().engineKeys.keys.find((k) => k.id === 'aisstream');
+    expect(row).toMatchObject({ set: true, managed: 'file' });
+    // The child process does not exit: the fake server stays alive, nothing restarted or crashed.
+    await h.clock.advance(5_000); // polling hits the refused connection and keeps the saved view
+    expect(h.controller.publicState().engineKeys.keys.find((k) => k.id === 'aisstream')?.set).toBe(true);
+    keys.down = false;
+    await h.clock.advance(20_000);
+    expect(h.controller.publicState().engineKeys.source).toBe('engine');
+    // (The 20 s launch update check may pass through CHECKING; nothing else is allowed.)
+    expect(h.phases.filter((p) => p !== 'RUNNING' && p !== 'CHECKING')).toEqual([]);
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.isRunning()).toBe(true);
+    expect(h.server.starts).toHaveLength(1);
+    expect(h.server.stops).toBe(0);
+    // The value never reaches state, logs or the pushed public state.
+    expect(JSON.stringify(h.controller.publicState())).not.toContain(secret);
+    expect(h.logs.join('\n')).not.toContain(secret);
+    expect(JSON.stringify(h.saved)).not.toContain(secret);
+  });
+
+  it('a two-variable key is sent as both variables and clearing sends null for each', async () => {
+    const keys = new FakeEngineKeys();
+    const h = await boot({ engineKeys: keys });
+    await h.controller.getEngineKeys();
+    await h.controller.saveEngineKey({ values: { OPENSKY_CLIENT_ID: 'id-1', OPENSKY_CLIENT_SECRET: 'secret-1' } });
+    expect(h.controller.publicState().engineKeys.keys.find((k) => k.id === 'opensky')?.set).toBe(true);
+    const cleared = await h.controller.clearEngineKey({ id: 'opensky' });
+    expect(cleared.ok).toBe(true);
+    expect(keys.saves.at(-1)).toEqual({ OPENSKY_CLIENT_ID: null, OPENSKY_CLIENT_SECRET: null });
+    expect(h.controller.publicState().engineKeys.keys.find((k) => k.id === 'opensky')?.set).toBe(false);
+    expect(await h.controller.clearEngineKey({ id: 'nope' })).toMatchObject({ ok: false, code: 'unknown-key' });
+  });
+
+  it('refuses without calling the engine when it is not running or the variable is unknown', async () => {
+    const keys = new FakeEngineKeys();
+    const idle = makeHarness({ engineKeys: keys });
+    live.push(idle);
+    expect(await idle.controller.saveEngineKey({ values: { AISSTREAM_API_KEY: 'abc' } })).toMatchObject({
+      ok: false,
+      code: 'not-running',
+    });
+    const h = await boot({ engineKeys: keys });
+    expect(await h.controller.saveEngineKey({ values: { HOST: '0.0.0.0' } })).toMatchObject({ ok: false, code: 'unknown-key' });
+    expect(keys.saves).toEqual([]);
+  });
+
+  it('an externally managed row is locked: the controller refuses before asking the engine', async () => {
+    const keys = new FakeEngineKeys();
+    keys.external.add('AISSTREAM_API_KEY');
+    const h = await boot({ engineKeys: keys });
+    const list = await h.controller.getEngineKeys();
+    const row = list.keys.find((k) => k.id === 'aisstream');
+    expect(row?.lock).toContain('Managed outside Provider Settings');
+    const r = await h.controller.saveEngineKey({ values: { AISSTREAM_API_KEY: 'abc' } });
+    expect(r).toMatchObject({ ok: false, code: 'locked' });
+    expect(keys.saves).toEqual([]);
+  });
+
+  it('the OpenAI row explains the placeholder while a non-OpenAI summary provider is active', async () => {
+    const keys = new FakeEngineKeys();
+    keys.external.add('OPENAI_API_KEY');
+    const h = await boot({ engineKeys: keys, state: { ai: { provider: 'ollama', model: null, ollamaHost: null } } });
+    const list = await h.controller.getEngineKeys();
+    expect(list.keys.find((k) => k.id === 'openai')?.lock).toContain('placeholder');
+    expect(list.keys.find((k) => k.id === 'openai')?.lock).toContain('Switch the summary provider back to OpenAI');
+  });
+
+  it("passes the engine's own refusal through as a message, with no transition", async () => {
+    const keys = new FakeEngineKeys();
+    keys.saveResult = { ok: false, restarting: false, code: 'external', message: 'OPENAI_API_KEY is managed outside Provider Settings, so it can only be changed where it was set.' };
+    const h = await boot({ engineKeys: keys });
+    await h.controller.getEngineKeys();
+    const r = await h.controller.saveEngineKey({ values: { OPENAI_API_KEY: 'abc' } });
+    expect(r).toMatchObject({ ok: false, code: 'external' });
+    expect(r.message).toContain('managed outside Provider Settings');
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.controller.publicState().engineKeys.keys.find((k) => k.id === 'openai')?.set).toBe(false);
+  });
+
+  it('Preferences opening refreshes both the key list and the settings', async () => {
+    const keys = new FakeEngineKeys();
+    const h = await boot({ engineKeys: keys });
+    await flush();
+    const calls = keys.statusCalls;
+    keys.values.set('AISSTREAM_API_KEY', 'x');
+    await h.controller.action('openPreferences');
+    await waitFor(() => keys.statusCalls > calls);
+    await waitFor(() => h.controller.publicState().engineKeys.keys.find((k) => k.id === 'aisstream')?.set === true);
   });
 });

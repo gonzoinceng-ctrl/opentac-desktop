@@ -58,7 +58,7 @@ after launch, every 6 hours while running, after sleep/wake and on window focus 
 **OpenTac › Check for App Updates…**. A new engine release can require a newer app; OpenTac then
 tells you to update the app first.
 
-### Channels (Preferences › Engine channel)
+### Channels (Preferences › Updates)
 
 | Channel | Follows | Meaning |
 |---|---|---|
@@ -69,27 +69,38 @@ tells you to update the app first.
 `candidate` and `upstream` show a yellow "untested" banner in the disclosure. Switching to an older
 commit (for example `candidate` to `stable`) is offered as a reset and says so.
 
-## API keys
+## Settings
 
-Keys live in the **engine's own POWER UP panel** (Provider Settings inside the globe) and are
-written to `<data dir>/checkout/.env`, mode 0600, on your Mac only. Saving a key restarts the engine
-server internally and reloads the page; that is upstream behaviour, not a crash. Keys survive engine
-updates and are never in OpenTac's logs. Every key is optional; see upstream's "Keys & Costs"
-section for what each unlocks (Cesium ion and Google Maps for photorealistic 3D, OpenAI or Gemini
-for voice, AIS, FIRMS, TomTom, OpenSky, Launch Library).
+Preferences (⌘,) is the one place for every key and setting. Six tabs: **General** (a map of where
+things live), **Updates** (channel and update checks), **API keys**, **AI summaries**,
+**Engine settings** and **App settings**. Each kind of setting is stored where the part that uses it
+looks for it, and nothing is stored twice:
+
+| Tab | What | Where it is stored | How it is written |
+|---|---|---|---|
+| API keys: engine keys (Google Maps, OpenAI, Gemini, AISStream, NASA FIRMS, TomTom, Cesium ion, OpenSky, Mapillary, Launch Library) | The keys the engine's own POWER UP panel knows. The list is read live from the running engine, so it always matches the engine version. | `<data dir>/checkout/.env`, mode 0600 | By the **engine itself**, through its own `/api/setup/keys` endpoint. OpenTac only relays the request. The engine restarts itself and the page reloads (not a crash). Rows the environment manages are shown **Locked**. |
+| API keys: OpenRouter and xAI (under "OpenTac AI summaries") | The optional HUD-summary providers | `<data dir>/secrets.json`, encrypted with Electron `safeStorage` | By OpenTac. Never in the engine's `.env`. |
+| Engine settings | Voice models, spend and rate limits, data feeds, CCTV camera packs, the Ontario 511 key | `<data dir>/checkout/.env`, mode 0600 | By **OpenTac**, one line at a time, leaving every other line and comment alone. Saving a group restarts the engine so it re-reads the file. |
+| App settings, Updates, AI summaries | Launch at login, crash restarts, update timing, log level, proxy, engine mirror, channel, summary provider | `<data dir>/state.json` | By OpenTac, immediately. |
+
+Values you type are never logged and never read back into the window: a saved key shows only
+"Set". See `docs/SHELL-DESIGN.md` section 14 for the design and `docs/QA.md` section 16 for the
+manual checks. Every key and setting is optional; see upstream's "Keys & Costs" section for what each key
+unlocks. Keys survive engine updates.
 
 ## AI providers and voice
 
 HUD summaries can use **OpenAI** (default, the engine's own path), **Ollama** (local),
-**OpenRouter** or **xAI**, chosen in Preferences › AI. For the non-OpenAI options OpenTac runs a
+**OpenRouter** or **xAI**, chosen in Preferences › AI summaries. For the non-OpenAI options OpenTac runs a
 small gateway bound to `127.0.0.1` and reroutes only the engine's single HUD-summary request; the
 OpenRouter and xAI keys are stored encrypted (`secrets.json`, protected by a Keychain key) and never
 in the engine's `.env`.
 
 **Voice control is not rerouted.** It uses OpenAI (Realtime over WebRTC) or Gemini (Live), with the
-key entered in the engine's POWER UP panel. While a non-OpenAI summary provider is active, the
-engine's OpenAI key row is locked (it is shown as set by the environment); switch back to OpenAI to
-edit it, and enter any voice key before you switch away. The Ollama, OpenRouter and xAI options do
+key entered under Preferences › API keys (or in the engine's POWER UP panel). While a non-OpenAI
+summary provider is active, the engine's OpenAI key row is **Locked** (the engine sees a placeholder
+key supplied by OpenTac and treats it as set by the environment); switch back to OpenAI to edit it,
+and enter any voice key before you switch away. The Ollama, OpenRouter and xAI options do
 not make voice local.
 
 ## Build from source

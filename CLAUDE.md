@@ -45,6 +45,10 @@ https://opentac.icu.
   interceptor + `src/main/aiGateway.ts`, per-launch gateway token). Never
   reroute the Realtime voice endpoints. Gateway keys live in `secrets.json`
   encrypted via `safeStorage`, never in the engine's `.env`.
+- Settings (docs/SHELL-DESIGN.md §14): engine keys are written **by the engine** through its own
+  endpoint; engine settings are written by the shell into `.env` line by line (never the 12 registry
+  variables, `HOST`, `PORT`, `VITE_*`); app settings live in `state.json` `app`. Never log or return a
+  key or secret setting value.
 - The engine child env is built clean: none of the engine's provider keys
   (see DECISIONS "Engine contract drift"), no `PINOKIO_SHARE_*`, no
   `ELECTRON_*`/`npm_config_*`.
@@ -80,7 +84,8 @@ that one spawn then stripped; a plain launch ignores it).
 
 - `src/main/` — main process, one module per responsibility. Pure/engine:
   `paths`, `state`, `logger`, `ringBuffer`, `ports`, `git`, `checkout`,
-  `install`, `envFile`, `server`, `aiGateway`, `secrets`, `errors`,
+  `install`, `envFile`, `envSettings` (engine `.env` settings writer), `engineKeys` (client for the
+  engine's `/api/setup/*`), `server`, `aiGateway`, `secrets`, `errors`,
   `policy` (pure navigation/permission/USB/bounds decisions), `contracts`
   (internal interfaces). Electron-bound: `index` (entry), `controller`
   (state machine), `update` (engine updates), `shellUpdate` (electron-updater),
@@ -89,8 +94,9 @@ that one spawn then stripped; a plain launch ignores it).
   `usb.ts` (USB picker); bundled by esbuild to sandbox-safe `.cjs`.
 - `src/renderer/setup/` — our only UI; plain TypeScript, no framework
   (`index.html`, `setup.ts`, `view.ts`, `styles.css`, `usb-picker.*`).
-- `src/shared/` — `types.ts`, `ipc.ts` (channels + guards), `redact.ts`. No
-  Node builtins (it is bundled into the preloads).
+- `src/shared/` — `types.ts`, `ipc.ts` (channels + guards), `redact.ts`, `appSettings.ts`,
+  `engineKeyCatalog.ts`, `engineSettingsCatalog.ts` (settings catalogues and validators). No
+  Node builtins (it is bundled into the preloads and the renderer).
 - `resources/launcher/opentac-start.mjs` — runs inside the checkout under the
   bundled Node; mirrors upstream's `scripts/pinokio-start.mjs`. Keep it tiny
   and dependency-free (it may only import from the checkout's `node_modules`).

@@ -24,7 +24,8 @@
     "dist": "npm run build && electron-builder --mac --publish never",
     "release": "npm run build && electron-builder --mac --publish always",
     "site:build": "node site/build.mjs",
-    "site:dev": "node site/build.mjs --serve"
+    "site:dev": "node site/build.mjs --serve",
+    "site:screenshots": "npx -y tsx scripts/screenshots.mts"
   },
   "dependencies": {
     "dugite": "3.3.2",

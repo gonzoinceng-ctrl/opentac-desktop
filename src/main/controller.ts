@@ -23,15 +23,25 @@
 import { randomBytes } from 'node:crypto';
 import { copyFile, readFile, rm, statfs, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { checkIntervalMs, engineRemoteAllowed, mergeAppSettings } from '../shared/appSettings.js';
+import type { AppSettingsPatch } from '../shared/appSettings.js';
+import { ENGINE_KEY_CATALOG } from '../shared/engineKeyCatalog.js';
 import type {
   ActionName,
   AiPrefsPublic,
   AiTestResultPublic,
+  ClearEngineKeyPayload,
   Disclosure,
+  EngineKeySaveResult,
+  EngineKeysPublic,
+  EngineSettingsPublic,
   Phase,
   Prefs,
   Progress,
   PublicState,
+  SaveEngineKeyPayload,
+  SaveEngineSettingsPayload,
+  SaveEngineSettingsResult,
   SetAiKeyPayload,
   SetAiPayload,
   UserError,
@@ -41,7 +51,20 @@ import type { AiProvider, ShellState } from '../shared/types.js';
 import type { AiGateway, AiGatewayConfig } from './aiGateway.js';
 import type { CheckoutManager, ResolvedTarget } from './checkout.js';
 import type { ControllerApi, SecretsApi, ShellUi, ShellUpdaterApi } from './contracts.js';
-import { envFileHasKey as realEnvFileHasKey } from './envFile.js';
+import {
+  EngineKeysError,
+  applySavedKeys,
+  createEngineKeysClient,
+  fallbackEngineKeys,
+  liveEngineKeys,
+} from './engineKeys.js';
+import type { EngineKeysClient } from './engineKeys.js';
+import { envFileHasKey as realEnvFileHasKey, envFileKeys as realEnvFileKeys } from './envFile.js';
+import {
+  EnvSettingsError,
+  readEngineSettingsPublic as realReadEngineSettings,
+  writeEngineSettings as realWriteEngineSettings,
+} from './envSettings.js';
 import {
   MIN_FREE_BYTES,
   ShellError,
@@ -207,11 +230,15 @@ export function resolveEngineOverrides(env: NodeJS.ProcessEnv): {
 }
 
 /** True when an automatic check may run: never checked, or the last one is old enough. */
-export function isAutomaticCheckDue(lastUpdateCheck: string | null, nowMs: number): boolean {
+export function isAutomaticCheckDue(
+  lastUpdateCheck: string | null,
+  nowMs: number,
+  intervalMs: number = CHECK_INTERVAL_MS,
+): boolean {
   if (lastUpdateCheck === null) return true;
   const last = Date.parse(lastUpdateCheck);
   if (Number.isNaN(last)) return true;
-  return nowMs - last >= CHECK_INTERVAL_MS - CHECK_RATE_TOLERANCE_MS;
+  return nowMs - last >= intervalMs - CHECK_RATE_TOLERANCE_MS;
 }
 
 /**
@@ -277,6 +304,17 @@ export interface ControllerDeps {
   fetchImpl?: typeof fetch | undefined;
   /** Called by the `quit` action; index.ts passes `() => app.quit()`. */
   requestQuit?: (() => void) | undefined;
+  /** Registers or removes the login item (index.ts: `app.setLoginItemSettings`). */
+  setLoginItem?: ((openAtLogin: boolean) => void) | undefined;
+  /** Clears the remembered WebUSB devices that live outside the controller (index.ts). */
+  forgetUsbDevices?: (() => void) | undefined;
+  /** Replaces the real engine key client (tests). */
+  engineKeys?: EngineKeysClient | undefined;
+  /** Names of non-empty variables in a dotenv file; default the real scanner. */
+  envFileKeys?: ((file: string) => Promise<Set<string>>) | undefined;
+  /** Engine `.env` settings reader/writer; default the real ones in envSettings.ts. */
+  readEngineSettings?: ((file: string) => Promise<EngineSettingsPublic>) | undefined;
+  writeEngineSettings?: ((file: string, patch: Record<string, string | null>) => Promise<void>) | undefined;
 }
 
 /** The controller plus the hooks the app shell needs beyond {@link ControllerApi}. */
@@ -350,6 +388,9 @@ export function createController(deps: ControllerDeps): ShellController {
   const timers = deps.timers ?? defaultTimers();
   const diskFree = deps.diskFree ?? defaultDiskFree;
   const hasEnvKey = deps.envFileHasKey ?? realEnvFileHasKey;
+  const envKeyNames = deps.envFileKeys ?? realEnvFileKeys;
+  const readSettings = deps.readEngineSettings ?? realReadEngineSettings;
+  const writeSettings = deps.writeEngineSettings ?? realWriteEngineSettings;
   const ports = deps.ports ?? { isPortFree: (p: number) => isPortFree(p), findFreePort };
   const fetchImpl: typeof fetch = deps.fetchImpl ?? ((input, init) => fetch(input, init));
 
@@ -358,7 +399,11 @@ export function createController(deps: ControllerDeps): ShellController {
 
   const engineOverrides = resolveEngineOverrides(deps.env);
   const refOverride = engineOverrides.ref;
-  const effectiveRemote = (): string => engineOverrides.remoteUrl ?? state.remoteUrl;
+  // The App settings mirror override is read once: it takes effect at the next launch.
+  const storedRemote = deps.initialState.app.engineRemoteUrl;
+  const launchRemoteOverride = engineRemoteAllowed(storedRemote, deps.isPackaged) ? storedRemote : null;
+  if (launchRemoteOverride !== storedRemote) log.warn('ignoring a file:// engine mirror override in a packaged build');
+  const effectiveRemote = (): string => engineOverrides.remoteUrl ?? launchRemoteOverride ?? state.remoteUrl;
 
   const updater: UpdateManager =
     deps.update ??
@@ -388,6 +433,12 @@ export function createController(deps: ControllerDeps): ShellController {
   };
   let runningPort: number | null = null;
   let mainUrl: string | null = null;
+  let engineKeysView: EngineKeysPublic = fallbackEngineKeys(
+    new Set(),
+    'Keys can be entered once the engine is running.',
+  );
+  let engineSettingsView: EngineSettingsPublic = { values: {}, set: {} };
+  let keysRefreshSeq = 0;
 
   // ---- lifecycle bookkeeping ----
   const listeners = new Set<(s: PublicState) => void>();
@@ -443,6 +494,9 @@ export function createController(deps: ControllerDeps): ShellController {
       port: runningPort ?? state.lastPort,
       prefs: { channel: state.channel, updateCheckOnLaunch: state.updateCheckOnLaunch },
       ai: aiPublic(),
+      app: { ...state.app, proxy: { ...state.app.proxy } },
+      engineKeys: engineKeysView,
+      engineSettings: engineSettingsView,
       versions: versionsCache,
       notices: [...notices],
       preferencesOpen,
@@ -826,6 +880,9 @@ export function createController(deps: ControllerDeps): ShellController {
       shellVersion: deps.appVersion,
       signal: abort.signal,
     };
+    if (state.app.proxy.httpsProxy !== null || state.app.proxy.noProxy !== null) {
+      opts.proxy = { ...state.app.proxy };
+    }
     if (gw !== null) {
       opts.aiGatewayUrl = gw.url;
       opts.injectPlaceholderOpenAiKey = !(await hasEnvKey(paths.envFile, 'OPENAI_API_KEY'));
@@ -871,6 +928,7 @@ export function createController(deps: ControllerDeps): ShellController {
     ui.hideSetup();
     scheduleBackgroundChecks();
     void refreshVersions();
+    void refreshEngineKeys();
   }
 
   /**
@@ -1013,7 +1071,9 @@ export function createController(deps: ControllerDeps): ShellController {
     ui.setMainEnabled(false);
     ui.showSetup();
     const t = now();
-    if (lastAutoRestartAt === null || t - lastAutoRestartAt > AUTO_RESTART_GUARD_MS) {
+    if (!state.app.autoRestartOnCrash) {
+      log.warn('not restarting automatically: automatic restart after a crash is switched off in App settings');
+    } else if (lastAutoRestartAt === null || t - lastAutoRestartAt > AUTO_RESTART_GUARD_MS) {
       lastAutoRestartAt = t;
       log.info('restarting the server automatically (once)');
       transition('STARTING', 'automatic restart after a crash');
@@ -1147,9 +1207,20 @@ export function createController(deps: ControllerDeps): ShellController {
         log.warn(`app update check failed: ${errText(err)}`);
       });
     }, SHELL_CHECK_DELAY_MS);
+    scheduleCheckInterval();
+  }
+
+  /** (Re)creates the background check interval from App settings; none for launch-only. */
+  function scheduleCheckInterval(): void {
+    if (checkInterval !== null) {
+      timers.clearInterval(checkInterval);
+      checkInterval = null;
+    }
+    const ms = checkIntervalMs(state.app.updateCheckInterval);
+    if (ms === null || shuttingDown) return;
     checkInterval = timers.setInterval(() => {
       void backgroundUpdateCheck('interval');
-    }, CHECK_INTERVAL_MS);
+    }, ms);
   }
 
   async function backgroundUpdateCheck(why: string): Promise<void> {
@@ -1158,11 +1229,16 @@ export function createController(deps: ControllerDeps): ShellController {
       log.debug(`${why} update check skipped: automatic checks are off`);
       return;
     }
+    if (state.app.updateCheckInterval === 'launch-only' && why !== 'launch') {
+      log.debug(`${why} update check skipped: App settings check only at launch`);
+      return;
+    }
     if (now() < offlineUntil) {
       log.debug(`${why} update check skipped: GitHub was unreachable a moment ago`);
       return;
     }
-    if (!isAutomaticCheckDue(state.lastUpdateCheck, now())) {
+    const dueEvery = checkIntervalMs(state.app.updateCheckInterval) ?? CHECK_INTERVAL_MS;
+    if (!isAutomaticCheckDue(state.lastUpdateCheck, now(), dueEvery)) {
       log.debug(`${why} update check skipped: last check was ${String(state.lastUpdateCheck)}`);
       return;
     }
@@ -1435,6 +1511,14 @@ export function createController(deps: ControllerDeps): ShellController {
         aboutOpen = false;
         ui.showSetup();
         emitNow();
+        void refreshEngineKeys();
+        void refreshEngineSettings();
+        return;
+      case 'openDataFolder':
+        // The IPC layer intercepts this and opens the data folder; nothing to do here.
+        return;
+      case 'forgetUsbDevices':
+        await forgetUsbDevices();
         return;
       case 'closePreferences':
         // Closes whichever overlay is open (Preferences or About) so one action serves both panels.
@@ -1559,6 +1643,232 @@ export function createController(deps: ControllerDeps): ShellController {
   }
 
   // -------------------------------------------------------------------------
+  // Settings: engine keys, engine .env settings, app settings
+  // -------------------------------------------------------------------------
+
+  const engineKeysClient: EngineKeysClient =
+    deps.engineKeys ??
+    createEngineKeysClient({
+      engineUrl: () => currentEngineUrl(),
+      fetchImpl,
+      log: deps.log,
+    });
+
+  function currentEngineUrl(): string | null {
+    return machine.phase() === 'RUNNING' && runningPort !== null ? `http://127.0.0.1:${runningPort}/` : null;
+  }
+
+  async function savedEnvKeyNames(): Promise<Set<string>> {
+    try {
+      return await envKeyNames(paths.envFile);
+    } catch (err) {
+      log.warn(`could not read the engine .env key names: ${errText(err)}`);
+      return new Set();
+    }
+  }
+
+  /** Reads the live list from the engine. Returns false (leaving the view alone) when it cannot. */
+  async function loadLiveEngineKeys(seq: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+    try {
+      const status = await engineKeysClient.status();
+      if (seq !== keysRefreshSeq || shuttingDown) return { ok: true };
+      engineKeysView = liveEngineKeys(status, await savedEnvKeyNames(), state.ai.provider);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err instanceof EngineKeysError ? err.message : errText(err) };
+    }
+  }
+
+  /** Refreshes the cached key list: live when the engine answers, else the catalogue plus .env. */
+  async function refreshEngineKeys(): Promise<void> {
+    if (shuttingDown) return;
+    keysRefreshSeq += 1;
+    const seq = keysRefreshSeq;
+    let note: string | null = 'Keys can be entered once the engine is running. The list shows which keys are already saved.';
+    if (currentEngineUrl() !== null) {
+      const live = await loadLiveEngineKeys(seq);
+      if (live.ok) {
+        emitNow();
+        return;
+      }
+      note = `${live.reason} The list shows which keys are already saved in the engine .env file.`;
+    }
+    if (seq !== keysRefreshSeq || shuttingDown) return;
+    engineKeysView = fallbackEngineKeys(await savedEnvKeyNames(), note);
+    emitNow();
+  }
+
+  /**
+   * After a successful key save the engine restarts itself (about 250 ms later) and refuses
+   * connections for a moment. That is normal, not a crash: the child process never exits.
+   * Poll quietly until the engine answers again, then show its own view of the keys.
+   */
+  async function refreshKeysAfterEngineRestart(): Promise<void> {
+    keysRefreshSeq += 1;
+    const seq = keysRefreshSeq;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(750);
+      if (shuttingDown || seq !== keysRefreshSeq || currentEngineUrl() === null) return;
+      const live = await loadLiveEngineKeys(seq);
+      if (live.ok) {
+        emitNow();
+        return;
+      }
+    }
+    log.warn('the engine did not answer the key list after a key change; keeping the saved view');
+  }
+
+  async function refreshEngineSettings(): Promise<void> {
+    if (shuttingDown) return;
+    try {
+      engineSettingsView = await readSettings(paths.envFile);
+    } catch (err) {
+      log.warn(`could not read the engine settings: ${errText(err)}`);
+    }
+    emitNow();
+  }
+
+  async function getEngineKeys(): Promise<EngineKeysPublic> {
+    await refreshEngineKeys();
+    return engineKeysView;
+  }
+
+  function knownKeyEnvVars(): Set<string> {
+    const names = new Set<string>();
+    for (const e of ENGINE_KEY_CATALOG) for (const v of e.envVars) names.add(v);
+    for (const row of engineKeysView.keys) for (const v of row.envVars) names.add(v);
+    return names;
+  }
+
+  function keyFailure(code: string, message: string): EngineKeySaveResult {
+    return { ok: false, restarting: false, code, message };
+  }
+
+  async function sendKeyChange(updates: Record<string, string | null>): Promise<EngineKeySaveResult> {
+    if (currentEngineUrl() === null) {
+      return keyFailure('not-running', 'The engine is not running, so keys can only be entered once it has started.');
+    }
+    const known = knownKeyEnvVars();
+    if (Object.keys(updates).some((n) => !known.has(n))) {
+      return keyFailure('unknown-key', 'That is not a key the engine knows.');
+    }
+    const locked = engineKeysView.keys.find((row) => row.lock !== null && row.envVars.some((v) => v in updates));
+    if (locked?.lock !== undefined && locked.lock !== null) return keyFailure('locked', locked.lock);
+    const result = await engineKeysClient.save(updates);
+    if (result.ok) {
+      engineKeysView = applySavedKeys(engineKeysView, updates);
+      emitNow();
+      if (result.restarting) void refreshKeysAfterEngineRestart();
+    }
+    return result;
+  }
+
+  function saveEngineKey(payload: SaveEngineKeyPayload): Promise<EngineKeySaveResult> {
+    return sendKeyChange({ ...payload.values });
+  }
+
+  function clearEngineKey(payload: ClearEngineKeyPayload): Promise<EngineKeySaveResult> {
+    const row = engineKeysView.keys.find((r) => r.id === payload.id);
+    if (row === undefined) return Promise.resolve(keyFailure('unknown-key', 'That is not a key the engine knows.'));
+    const updates: Record<string, string | null> = {};
+    for (const v of row.envVars) updates[v] = null;
+    return sendKeyChange(updates);
+  }
+
+  async function getEngineSettings(): Promise<EngineSettingsPublic> {
+    await refreshEngineSettings();
+    return engineSettingsView;
+  }
+
+  async function saveEngineSettings(payload: SaveEngineSettingsPayload): Promise<SaveEngineSettingsResult> {
+    try {
+      await writeSettings(paths.envFile, payload.patch);
+    } catch (err) {
+      if (err instanceof EnvSettingsError) {
+        return { ok: false, restarting: false, invalid: err.invalid, message: err.message };
+      }
+      log.error(err instanceof Error ? err : String(err));
+      return {
+        ok: false,
+        restarting: false,
+        invalid: {},
+        message: 'OpenTac could not write the engine .env file, so nothing was saved.',
+      };
+    }
+    // Names only: values (some are secrets) are never logged.
+    log.info(`engine settings saved: ${Object.keys(payload.patch).join(', ')}`);
+    await refreshEngineSettings();
+    if (machine.phase() === 'RUNNING') {
+      void restartEngine('engine settings changed').catch((err: unknown) => {
+        log.error(err instanceof Error ? err : String(err));
+      });
+      return { ok: true, restarting: true, invalid: {}, message: 'Restarting the engine to apply settings…' };
+    }
+    return {
+      ok: true,
+      restarting: false,
+      invalid: {},
+      message: 'Saved. The new settings apply the next time the engine starts.',
+    };
+  }
+
+  async function setAppSettings(patch: AppSettingsPatch): Promise<void> {
+    const previous = state.app;
+    const next = mergeAppSettings(previous, patch);
+    if (!engineRemoteAllowed(next.engineRemoteUrl, deps.isPackaged) && next.engineRemoteUrl !== previous.engineRemoteUrl) {
+      throw new Error('A file:// mirror can only be used in development builds. Use an https:// address.');
+    }
+    await persist({ app: next });
+    if (next.launchAtLogin !== previous.launchAtLogin) {
+      try {
+        deps.setLoginItem?.(next.launchAtLogin);
+        log.info(`launch at login is now ${next.launchAtLogin ? 'on' : 'off'}`);
+      } catch (err) {
+        log.warn(`could not change the login item: ${errText(err)}`);
+        addNotice("macOS didn't accept the launch-at-login change. Check System Settings, General, Login Items.");
+      }
+    }
+    if (next.updateCheckInterval !== previous.updateCheckInterval) {
+      log.info(`update check interval is now ${next.updateCheckInterval}`);
+      if (backgroundScheduled) scheduleCheckInterval();
+    }
+    if (next.autoRestartOnCrash !== previous.autoRestartOnCrash) {
+      log.info(`automatic restart after a crash is now ${next.autoRestartOnCrash ? 'on' : 'off'}`);
+    }
+    if (next.logLevel !== previous.logLevel) log.info(`log level setting is now ${next.logLevel} (applies at next launch)`);
+    if (next.engineRemoteUrl !== previous.engineRemoteUrl) log.info('engine mirror override changed (applies at next launch)');
+    if (
+      next.proxy.httpsProxy !== previous.proxy.httpsProxy ||
+      next.proxy.noProxy !== previous.proxy.noProxy
+    ) {
+      log.info('proxy settings changed (git and npm use them now, the engine at its next start)');
+    }
+    emitNow();
+  }
+
+  async function forgetUsbDevices(): Promise<void> {
+    const count = state.usbDevices.length;
+    const yes = await ui.confirm({
+      title: 'Forget remembered USB devices?',
+      message:
+        count === 0
+          ? 'No USB devices are remembered. Forget the list anyway?'
+          : `OpenTac will forget ${count} remembered USB ${count === 1 ? 'device' : 'devices'}. The engine asks you to pick a device again the next time it needs one.`,
+      confirmLabel: 'Forget devices',
+      destructive: true,
+    });
+    if (!yes) return;
+    try {
+      deps.forgetUsbDevices?.();
+    } catch (err) {
+      log.warn(`could not clear the remembered USB devices: ${errText(err)}`);
+    }
+    await persist({ usbDevices: [] });
+    log.info('remembered USB devices were forgotten');
+    emitNow();
+  }
+
+  // -------------------------------------------------------------------------
   // Public surface
   // -------------------------------------------------------------------------
 
@@ -1578,6 +1888,11 @@ export function createController(deps: ControllerDeps): ShellController {
         }
       });
       await refreshAiStatus();
+      await refreshEngineSettings();
+      engineKeysView = fallbackEngineKeys(
+        await savedEnvKeyNames(),
+        'Keys can be entered once the engine is running. The list shows which keys are already saved.',
+      );
       log.info(`OpenTac ${deps.appVersion} controller starting (packaged=${String(deps.isPackaged)})`);
       emitNow();
       try {
@@ -1594,12 +1909,18 @@ export function createController(deps: ControllerDeps): ShellController {
     setAi,
     setAiKey,
     testAi,
+    setAppSettings,
+    getEngineKeys,
+    saveEngineKey,
+    clearEngineKey,
+    getEngineSettings,
+    saveEngineSettings,
     listOllamaModels,
     async versions() {
       versionsCache = await buildVersions();
       return versionsCache;
     },
-    engineUrl: () => (machine.phase() === 'RUNNING' && runningPort !== null ? `http://127.0.0.1:${runningPort}/` : null),
+    engineUrl: currentEngineUrl,
     shutdown() {
       shutdownPromise ??= (async () => {
         shuttingDown = true;

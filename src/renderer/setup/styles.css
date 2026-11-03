@@ -394,6 +394,7 @@ button.link-button {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin: 10px 0 14px;
   border-bottom: 1px solid var(--border);
@@ -423,6 +424,7 @@ button.link-button {
 
 input[type='text'],
 input[type='password'],
+input[type='number'],
 select {
   width: 100%;
   padding: 6px 8px;
@@ -440,6 +442,11 @@ select {
 
 .inline input {
   flex: 1 1 auto;
+}
+
+.inline button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .check,
@@ -477,6 +484,148 @@ fieldset.radios legend {
 .test-result .bad {
   color: var(--danger);
   font-weight: 600;
+}
+
+/* Preferences: keys, engine settings, app settings */
+.settings-map {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.settings-map li {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.settings-map .link-button {
+  font-weight: 650;
+}
+
+.key-list {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.key-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.key-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.key-title {
+  font-weight: 650;
+}
+
+.key-state {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.key-row[data-state='set'] .key-state {
+  color: var(--ok);
+}
+
+.key-row[data-state='locked'] .key-state {
+  color: var(--warn-fg);
+}
+
+.key-row[data-state='unset'] .key-state {
+  color: var(--fg-muted);
+}
+
+.badge {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.key-fields {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.key-fields label,
+.settings-group .field > label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.key-row .button-row,
+.settings-group .button-row {
+  margin: 6px 0 0;
+}
+
+.settings-group {
+  margin: 0 0 18px;
+  padding: 4px 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.settings-group h3 {
+  margin-top: 12px;
+}
+
+.settings-group .field {
+  margin: 10px 0;
+}
+
+.settings-group .banner {
+  margin: 4px 0 0;
+}
+
+.region-table {
+  width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.region-table th,
+.region-table td {
+  padding: 6px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.region-table input[type='number'] {
+  width: 90px;
+}
+
+.region-table input[type='text'] {
+  margin-bottom: 4px;
+}
+
+input[type='number']:disabled,
+input[type='password']:disabled,
+input[type='text']:disabled,
+select:disabled {
+  opacity: 0.6;
 }
 
 /* USB picker page */

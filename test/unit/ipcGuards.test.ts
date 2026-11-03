@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   IPC,
   isActionName,
+  isAppSettingsPatch,
+  isClearEngineKeyPayload,
   isExternalUrl,
   isPrefsPatch,
+  isSaveEngineKeyPayload,
+  isSaveEngineSettingsPayload,
   isSetAiKeyPayload,
   isSetAiPayload,
   isUsbChoice,
@@ -22,6 +26,12 @@ const setupOnly = [
   IPC.setAi,
   IPC.setAiKey,
   IPC.testAi,
+  IPC.setAppSettings,
+  IPC.getEngineKeys,
+  IPC.saveEngineKey,
+  IPC.clearEngineKey,
+  IPC.getEngineSettings,
+  IPC.saveEngineSettings,
   IPC.listOllamaModels,
   IPC.usbPickerList,
   IPC.usbPickerChoose,
@@ -105,6 +115,55 @@ describe('payload guards used by the handlers', () => {
     expect(isSetAiKeyPayload({ provider: 'openai', key: 'abc' })).toBe(false);
     expect(isSetAiKeyPayload({ provider: 'xai', key: 'a b' })).toBe(false);
     expect(isSetAiKeyPayload({ provider: 'xai', key: 'x'.repeat(600) })).toBe(false);
+  });
+  it('isActionName knows the two new maintenance actions', () => {
+    expect(isActionName('openDataFolder')).toBe(true);
+    expect(isActionName('forgetUsbDevices')).toBe(true);
+  });
+  it('isAppSettingsPatch is re-exported for the handlers', () => {
+    expect(isAppSettingsPatch({ launchAtLogin: true })).toBe(true);
+    expect(isAppSettingsPatch({ proxy: { httpsProxy: 'http://p:1' } })).toBe(true);
+    expect(isAppSettingsPatch({ proxy: { httpsProxy: 'javascript:alert(1)' } })).toBe(false);
+    expect(isAppSettingsPatch({ engineRemoteUrl: 'file:///x.git', logLevel: 'warn' })).toBe(true);
+    expect(isAppSettingsPatch({ engineRemoteUrl: 'ssh://x/y.git' })).toBe(false);
+  });
+  it('isSaveEngineKeyPayload', () => {
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: 'abc123' } })).toBe(true);
+    expect(isSaveEngineKeyPayload({ values: { OPENSKY_CLIENT_ID: 'a', OPENSKY_CLIENT_SECRET: 'b' } })).toBe(true);
+    expect(isSaveEngineKeyPayload({ values: {} })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: '' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: 'a b' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: 'a\nb' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: 'a$b' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { AISSTREAM_API_KEY: 'x'.repeat(513) } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { 'bad name': 'abc' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { aisstream_api_key: 'abc' } })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: { A: 'b' }, extra: 1 })).toBe(false);
+    expect(isSaveEngineKeyPayload({ values: [] })).toBe(false);
+    expect(isSaveEngineKeyPayload(null)).toBe(false);
+    const many = Object.fromEntries(Array.from({ length: 17 }, (_v, i) => [`KEY_${i}`, 'abc']));
+    expect(isSaveEngineKeyPayload({ values: many })).toBe(false);
+  });
+  it('isClearEngineKeyPayload', () => {
+    expect(isClearEngineKeyPayload({ id: 'aisstream' })).toBe(true);
+    expect(isClearEngineKeyPayload({ id: 'google-maps-server' })).toBe(true);
+    expect(isClearEngineKeyPayload({ id: 'AISSTREAM' })).toBe(false);
+    expect(isClearEngineKeyPayload({ id: '../x' })).toBe(false);
+    expect(isClearEngineKeyPayload({ id: 'a', extra: 1 })).toBe(false);
+    expect(isClearEngineKeyPayload({})).toBe(false);
+  });
+  it('isSaveEngineSettingsPayload', () => {
+    expect(isSaveEngineSettingsPayload({ patch: { CCTV_MAX_SOURCES: '4000', PHOTON_URL: null } })).toBe(true);
+    expect(isSaveEngineSettingsPayload({ patch: { PHOTON_URL: '' } })).toBe(true);
+    expect(isSaveEngineSettingsPayload({ patch: {} })).toBe(false);
+    expect(isSaveEngineSettingsPayload({ patch: { CCTV_MAX_SOURCES: 5 } })).toBe(false);
+    expect(isSaveEngineSettingsPayload({ patch: { CCTV_MAX_SOURCES: 'a\nHOST=0.0.0.0' } })).toBe(false);
+    expect(isSaveEngineSettingsPayload({ patch: { 'bad key': '1' } })).toBe(false);
+    expect(isSaveEngineSettingsPayload({ patch: { X: 'x'.repeat(1025) } })).toBe(false);
+    expect(isSaveEngineSettingsPayload({ patch: { X: '1' }, extra: 1 })).toBe(false);
+    expect(isSaveEngineSettingsPayload([])).toBe(false);
+    const big = Object.fromEntries(Array.from({ length: 201 }, (_v, i) => [`K_${i}`, '1']));
+    expect(isSaveEngineSettingsPayload({ patch: big })).toBe(false);
   });
   it('isUsbChoice', () => {
     expect(isUsbChoice(null)).toBe(true);

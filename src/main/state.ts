@@ -2,8 +2,25 @@ import { randomBytes } from 'node:crypto';
 import { copyFile, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import {
+  LOG_LEVEL_SETTINGS,
+  UPDATE_CHECK_INTERVALS,
+  defaultAppSettings,
+  validateEngineRemoteUrl,
+  validateNoProxy,
+  validateProxyUrl,
+} from '../shared/appSettings.js';
 import { DEFAULT_REMOTE_URL } from '../shared/types.js';
-import type { AiProvider, Channel, ShellState, UsbDeviceId, WindowBounds } from '../shared/types.js';
+import type {
+  AiProvider,
+  AppSettings,
+  Channel,
+  LogLevelSetting,
+  ShellState,
+  UpdateCheckInterval,
+  UsbDeviceId,
+  WindowBounds,
+} from '../shared/types.js';
 
 /** Minimal log sink so this module never needs electron-log. */
 export interface StateLog {
@@ -42,7 +59,9 @@ export function defaultState(): ShellState {
     skippedCommit: null,
     mainWindowBounds: null,
     usbDevices: [],
-    ai: { provider: 'openai', model: null, ollamaHost: null },
+    // Owner's default: local Ollama summaries (verified with qwen3.5:9b-mlx); voice stays OpenAI/Gemini.
+    ai: { provider: 'ollama', model: 'qwen3.5:9b-mlx', ollamaHost: null },
+    app: defaultAppSettings(),
   };
 }
 
@@ -120,6 +139,56 @@ function readAi(raw: unknown): Result<ShellState['ai']> {
   return ok({ provider: provider as AiProvider, model: model.value, ollamaHost: ollamaHost.value });
 }
 
+function readBoolean(raw: unknown, fallback: boolean, name: string): Result<boolean> {
+  if (raw === undefined) return ok(fallback);
+  return typeof raw === 'boolean' ? ok(raw) : fail(`${name} must be a boolean`);
+}
+
+/** Reads `app`: missing object or fields fill from defaults, wrong types are rejected. */
+function readApp(raw: unknown): Result<AppSettings> {
+  const base = defaultAppSettings();
+  if (raw === undefined) return ok(base);
+  if (!isRecord(raw)) return fail('app must be an object');
+  const launch = readBoolean(raw['launchAtLogin'], base.launchAtLogin, 'app.launchAtLogin');
+  if (!launch.ok) return launch;
+  const restart = readBoolean(raw['autoRestartOnCrash'], base.autoRestartOnCrash, 'app.autoRestartOnCrash');
+  if (!restart.ok) return restart;
+  const interval = raw['updateCheckInterval'] === undefined ? base.updateCheckInterval : raw['updateCheckInterval'];
+  if (typeof interval !== 'string' || !UPDATE_CHECK_INTERVALS.includes(interval as UpdateCheckInterval)) {
+    return fail('app.updateCheckInterval must be launch-only, 6h or daily');
+  }
+  const level = raw['logLevel'] === undefined ? base.logLevel : raw['logLevel'];
+  if (typeof level !== 'string' || !LOG_LEVEL_SETTINGS.includes(level as LogLevelSetting)) {
+    return fail('app.logLevel is not a known log level');
+  }
+  let proxy = base.proxy;
+  if (raw['proxy'] !== undefined) {
+    const rp = raw['proxy'];
+    if (!isRecord(rp)) return fail('app.proxy must be an object');
+    const https = readNullableString(rp['httpsProxy'], 'app.proxy.httpsProxy');
+    if (!https.ok) return https;
+    const no = readNullableString(rp['noProxy'], 'app.proxy.noProxy');
+    if (!no.ok) return no;
+    const httpsChecked = validateProxyUrl(https.value);
+    if (!httpsChecked.ok) return fail(`app.proxy.httpsProxy: ${httpsChecked.reason}`);
+    const noChecked = validateNoProxy(no.value);
+    if (!noChecked.ok) return fail(`app.proxy.noProxy: ${noChecked.reason}`);
+    proxy = { httpsProxy: httpsChecked.value, noProxy: noChecked.value };
+  }
+  const remote = readNullableString(raw['engineRemoteUrl'], 'app.engineRemoteUrl');
+  if (!remote.ok) return remote;
+  const remoteChecked = validateEngineRemoteUrl(remote.value);
+  if (!remoteChecked.ok) return fail(`app.engineRemoteUrl: ${remoteChecked.reason}`);
+  return ok({
+    launchAtLogin: launch.value,
+    autoRestartOnCrash: restart.value,
+    updateCheckInterval: interval as UpdateCheckInterval,
+    logLevel: level as LogLevelSetting,
+    proxy,
+    engineRemoteUrl: remoteChecked.value,
+  });
+}
+
 function readScalars(rec: Record<string, unknown>, defaults: ShellState): Result<ShellState> {
   const state = defaults;
   if (rec['schemaVersion'] !== 1) return fail('schemaVersion must be 1');
@@ -168,11 +237,14 @@ export function validateState(
   if (!usb.ok) return usb;
   const ai = readAi(value['ai']);
   if (!ai.ok) return ai;
+  const app = readApp(value['app']);
+  if (!app.ok) return app;
 
   state.lastPort = port.value;
   state.mainWindowBounds = bounds.value;
   state.usbDevices = usb.value;
   state.ai = ai.value;
+  state.app = app.value;
   return { ok: true, state };
 }
 
@@ -222,6 +294,25 @@ export async function loadState(file: string, backupFile: string, log: StateLog)
   log.warn(`state file rejected (${reason}); backed up to ${backupFile}; using defaults`);
   await backUpBadFile(file, backupFile, log);
   return defaultState();
+}
+
+/**
+ * Reads only `app.logLevel` from state.json, early in boot (before the logger
+ * exists). Anything unreadable or invalid yields 'default'; this never throws.
+ */
+export async function readLogLevelSetting(file: string): Promise<LogLevelSetting> {
+  try {
+    const raw = JSON.parse(await readFile(file, 'utf8')) as unknown;
+    if (isRecord(raw) && isRecord(raw['app'])) {
+      const level = raw['app']['logLevel'];
+      if (typeof level === 'string' && LOG_LEVEL_SETTINGS.includes(level as LogLevelSetting)) {
+        return level as LogLevelSetting;
+      }
+    }
+  } catch {
+    // Missing or corrupt: loadState deals with it later.
+  }
+  return 'default';
 }
 
 /** Atomically writes state: temp file (0600) in the same dir, fsync, rename over the target. */

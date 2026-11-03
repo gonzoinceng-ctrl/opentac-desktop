@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -85,6 +85,45 @@ describe('InstallError', () => {
     expect(e.code).toBe('NETWORK');
     expect(e.detail).toBe('ECONNRESET');
     expect(new InstallError('ABORTED', 'x').detail).toBeUndefined();
+  });
+});
+
+describe('proxyEnv', () => {
+  let fx: InstallFixture | null = null;
+  afterEach(async () => {
+    await fx?.cleanup();
+    fx = null;
+  });
+
+  it('reaches the npm child as HTTPS_PROXY, HTTP_PROXY and NO_PROXY only', async () => {
+    fx = await makeInstallFixture();
+    await mkdir(join(fx.checkoutDir, 'scripts'), { recursive: true });
+    const out = join(fx.root, 'env.json');
+    await writeFile(
+      join(fx.checkoutDir, 'scripts', 'setup-doctor.mjs'),
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(out)}, JSON.stringify({ a: process.env.HTTPS_PROXY ?? null, b: process.env.HTTP_PROXY ?? null, c: process.env.NO_PROXY ?? null, d: process.env.NODE_USE_ENV_PROXY ?? null, e: process.env.GIT_SSH_COMMAND ?? null }));\n`,
+    );
+    const mgr = createInstallManager({
+      paths: {
+        checkoutDir: fx.checkoutDir,
+        nodeBin: process.execPath,
+        npmCli: '/nope',
+        npmCacheDir: fx.npmCacheDir,
+        nodeModulesDir: fx.nodeModulesDir,
+      },
+      log: arrayLogger().log,
+      env: { HOME: fx.home },
+      proxyEnv: () => ({ HTTPS_PROXY: 'http://p:1', HTTP_PROXY: 'http://p:1', NO_PROXY: 'localhost', GIT_SSH_COMMAND: 'evil' }),
+    });
+    const res = await mgr.runDoctor();
+    expect(res.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(out, 'utf8'))).toEqual({
+      a: 'http://p:1',
+      b: 'http://p:1',
+      c: 'localhost',
+      d: null,
+      e: null,
+    });
   });
 });
 

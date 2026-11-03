@@ -236,6 +236,39 @@ describe('createGitRunner', () => {
     }
   });
 
+  it('adds only the three proxy variables from proxyEnv, read on every call', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    let proxy: Record<string, string> = {};
+    const { log } = makeLogger();
+    const runner = createGitRunner({
+      gitDir: '/fake/git',
+      log,
+      baseEnv: { HOME: '/fake/home' },
+      proxyEnv: () => proxy,
+      execImpl: (async (_a: ExecArgs[0], _c: string, o: NonNullable<ExecArgs[2]>) => {
+        seen.push(o.env ?? {});
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }) as unknown as typeof exec,
+    });
+    await runner.run(['status'], '/repo');
+    proxy = {
+      HTTPS_PROXY: 'http://p:1',
+      HTTP_PROXY: 'http://p:1',
+      NO_PROXY: 'localhost',
+      NODE_USE_ENV_PROXY: '1',
+      GIT_SSH_COMMAND: 'evil',
+      EXTRA: 'x',
+    };
+    await runner.run(['status'], '/repo');
+    expect(seen[0]?.['HTTPS_PROXY']).toBeUndefined();
+    expect(seen[1]?.['HTTPS_PROXY']).toBe('http://p:1');
+    expect(seen[1]?.['HTTP_PROXY']).toBe('http://p:1');
+    expect(seen[1]?.['NO_PROXY']).toBe('localhost');
+    expect(seen[1]?.['NODE_USE_ENV_PROXY']).toBeUndefined();
+    expect(seen[1]?.['GIT_SSH_COMMAND']).toBeUndefined();
+    expect(seen[1]?.['EXTRA']).toBeUndefined();
+  });
+
   it('keeps the fatal line when stderr is mostly progress output', async () => {
     const progress = Array.from(
       { length: 200 },

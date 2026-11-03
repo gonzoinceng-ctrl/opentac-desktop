@@ -4,7 +4,9 @@ import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as sleep } from 'node:timers/promises';
 import treeKill from 'tree-kill';
+import { proxyEnvFor } from '../shared/appSettings.js';
 import { redact } from '../shared/redact.js';
+import type { ProxySettings } from '../shared/types.js';
 import type { Logger } from './logger.js';
 import type { RingBuffer } from './ringBuffer.js';
 
@@ -54,6 +56,8 @@ export interface ServerStartOptions {
   shellVersion: string;
   aiGatewayUrl?: string;
   injectPlaceholderOpenAiKey?: boolean;
+  /** App settings proxy; becomes HTTPS_PROXY, HTTP_PROXY, NO_PROXY and NODE_USE_ENV_PROXY. */
+  proxy?: ProxySettings;
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
   /** Overall readiness deadline; default 120000 when firstRun else 60000. */
@@ -131,6 +135,10 @@ const RESERVED_ENV_KEYS = new Set([
   'NO_COLOR',
   'FORCE_COLOR',
   'OPENTAC_AI_GATEWAY_URL',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NO_PROXY',
+  'NODE_USE_ENV_PROXY',
 ]);
 
 /** Options for {@link buildServerEnv}. */
@@ -142,6 +150,8 @@ export interface BuildServerEnvOptions {
   shellVersion: string;
   aiGatewayUrl?: string;
   placeholderOpenAiKey?: boolean;
+  /** Proxy from App settings; the only proxy variables the child ever gets. */
+  proxy?: ProxySettings;
   extra?: Record<string, string>;
 }
 
@@ -173,6 +183,7 @@ export function buildServerEnv(opts: BuildServerEnvOptions): Record<string, stri
   if (opts.aiGatewayUrl !== undefined && opts.aiGatewayUrl !== '') {
     env['OPENTAC_AI_GATEWAY_URL'] = opts.aiGatewayUrl;
   }
+  if (opts.proxy !== undefined) Object.assign(env, proxyEnvFor(opts.proxy, { nodeEnvProxy: true }));
   if (opts.placeholderOpenAiKey === true) {
     // Unconditional: a real key from `extra` must never reach the local gateway.
     env['OPENAI_API_KEY'] = PLACEHOLDER_OPENAI_API_KEY;
@@ -471,6 +482,7 @@ export function createServerManager(opts: ServerManagerOptions): ServerManager {
       ...(startOpts.injectPlaceholderOpenAiKey !== undefined
         ? { placeholderOpenAiKey: startOpts.injectPlaceholderOpenAiKey }
         : {}),
+      ...(startOpts.proxy !== undefined ? { proxy: startOpts.proxy } : {}),
       ...(startOpts.extraEnv !== undefined ? { extra: startOpts.extraEnv } : {}),
     });
     const child = spawnImpl(opts.nodeBin, [opts.launcherScript], {

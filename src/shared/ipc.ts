@@ -2,7 +2,14 @@
  * Renderer-facing IPC contract shared by main, preloads and the setup renderer.
  * This file is bundled into sandboxed preloads: NO Node builtins, NO electron imports.
  */
-import type { AiProvider, Channel } from './types.js';
+import { isAppSettingsPatch } from './appSettings.js';
+import type { AppSettingsPatch } from './appSettings.js';
+import { isEngineKeyValue } from './engineKeyCatalog.js';
+import type { EngineKeyTier } from './engineKeyCatalog.js';
+import type { AiProvider, AppSettings, Channel } from './types.js';
+
+export { isAppSettingsPatch };
+export type { AppSettingsPatch };
 
 /** Controller phases (docs/SHELL-DESIGN.md §2). */
 export type Phase =
@@ -50,6 +57,8 @@ export type ActionName =
   | 'openPreferences'
   | 'closePreferences'
   | 'showLogs'
+  | 'openDataFolder'
+  | 'forgetUsbDevices'
   | 'resetCheckout'
   | 'quit';
 
@@ -68,6 +77,8 @@ export const ACTION_NAMES: readonly ActionName[] = [
   'openPreferences',
   'closePreferences',
   'showLogs',
+  'openDataFolder',
+  'forgetUsbDevices',
   'resetCheckout',
   'quit',
 ];
@@ -152,6 +163,78 @@ export interface Versions {
   dataDir: string;
 }
 
+/** Who supplies an engine key: its own `.env` ('file', editable) or the environment ('external'). */
+export type EngineKeyManaged = 'file' | 'external' | null;
+
+/** One row of the engine's key registry, as reported by `GET /api/setup/status` (no values). */
+export interface EngineKeyInfo {
+  id: string;
+  title: string;
+  unlocks: string;
+  getUrl: string;
+  envVars: string[];
+  tier: EngineKeyTier;
+  clientExposed: boolean;
+  set: boolean;
+  managed: EngineKeyManaged;
+}
+
+/** The parsed status payload of the engine's key setup endpoint. */
+export interface EngineKeyStatus {
+  keys: EngineKeyInfo[];
+  setCount: number;
+  total: number;
+  store: string;
+}
+
+/** Outcome of saving or clearing engine keys. Never carries a value. */
+export interface EngineKeySaveResult {
+  ok: boolean;
+  /** True when the engine accepted the change and restarts itself (the page reloads). */
+  restarting: boolean;
+  /** Machine code such as 'external', 'unreachable', 'invalid'; null on success. */
+  code: string | null;
+  /** A plain sentence for the user; null on success. */
+  message: string | null;
+}
+
+/** A key row as the setup window shows it. */
+export interface EngineKeyRow extends EngineKeyInfo {
+  /** Why the row cannot be edited, or null. */
+  lock: string | null;
+  /** True for a row the engine hides from its own panel (shown here under Advanced). */
+  advanced: boolean;
+}
+
+/** Engine key list for the API keys tab. */
+export interface EngineKeysPublic {
+  /** 'engine' when read live from the running engine, else 'fallback' from the catalogue and .env. */
+  source: 'engine' | 'fallback';
+  keys: EngineKeyRow[];
+  setCount: number;
+  total: number;
+  store: string | null;
+  /** A plain sentence about where the list came from; null when nothing needs saying. */
+  note: string | null;
+}
+
+/** Engine settings as stored in `.env`: only catalogue keys; secret values are always ''. */
+export interface EngineSettingsPublic {
+  values: Record<string, string>;
+  /** True per key that has an active assignment (secrets: a non-empty one). */
+  set: Record<string, boolean>;
+}
+
+/** Outcome of saving engine settings. */
+export interface SaveEngineSettingsResult {
+  ok: boolean;
+  /** True when the engine is restarting to apply the change. */
+  restarting: boolean;
+  /** Keys that were refused, with a plain sentence each. */
+  invalid: Record<string, string>;
+  message: string | null;
+}
+
 /** What the setup renderer renders. Pushed on every transition and progress tick. */
 export interface PublicState {
   phase: Phase;
@@ -163,6 +246,9 @@ export interface PublicState {
   port: number | null;
   prefs: Prefs;
   ai: AiPrefsPublic;
+  app: AppSettings;
+  engineKeys: EngineKeysPublic;
+  engineSettings: EngineSettingsPublic;
   versions: Versions | null;
   /** Non-blocking notices (e.g. "Couldn't reach GitHub"), newest last. */
   notices: string[];
@@ -192,6 +278,21 @@ export interface SetAiKeyPayload {
   key: string;
 }
 
+export interface SaveEngineKeyPayload {
+  /** Env var name to new value, for example { AISSTREAM_API_KEY: '…' }. Values are never empty. */
+  values: Record<string, string>;
+}
+
+export interface ClearEngineKeyPayload {
+  /** Registry id such as 'aisstream'. */
+  id: string;
+}
+
+export interface SaveEngineSettingsPayload {
+  /** Variable name to new value; null removes the setting (comments the line out). */
+  patch: Record<string, string | null>;
+}
+
 export interface UsbDevicePublic {
   deviceId: string;
   vendorId: number;
@@ -211,6 +312,12 @@ export const IPC = {
   setAi: 'opentac:setAi',
   setAiKey: 'opentac:setAiKey',
   testAi: 'opentac:testAi',
+  setAppSettings: 'opentac:setAppSettings',
+  getEngineKeys: 'opentac:getEngineKeys',
+  saveEngineKey: 'opentac:saveEngineKey',
+  clearEngineKey: 'opentac:clearEngineKey',
+  getEngineSettings: 'opentac:getEngineSettings',
+  saveEngineSettings: 'opentac:saveEngineSettings',
   listOllamaModels: 'opentac:listOllamaModels',
   usbPickerList: 'opentac:usbPicker:list',
   usbPickerChoose: 'opentac:usbPicker:choose',
@@ -236,6 +343,12 @@ export interface OpenTacSetupApi extends OpenTacMainApi {
   setAi(payload: SetAiPayload): Promise<void>;
   setAiKey(payload: SetAiKeyPayload): Promise<void>;
   testAi(): Promise<AiTestResultPublic>;
+  setAppSettings(patch: AppSettingsPatch): Promise<void>;
+  getEngineKeys(): Promise<EngineKeysPublic>;
+  saveEngineKey(payload: SaveEngineKeyPayload): Promise<EngineKeySaveResult>;
+  clearEngineKey(payload: ClearEngineKeyPayload): Promise<EngineKeySaveResult>;
+  getEngineSettings(): Promise<EngineSettingsPublic>;
+  saveEngineSettings(payload: SaveEngineSettingsPayload): Promise<SaveEngineSettingsResult>;
   listOllamaModels(): Promise<{ models: string[]; error: string | null }>;
 }
 
@@ -300,6 +413,41 @@ export function isSetAiKeyPayload(v: unknown): v is SetAiKeyPayload {
   const key = v['key'];
   if (typeof key !== 'string' || key.length > 512 || /[\s\u0000-\u001f]/.test(key)) return false;
   return Object.keys(v).every((k) => k === 'provider' || k === 'key');
+}
+
+const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** Validates a SaveEngineKeyPayload: known-shaped env names, values the engine would accept. */
+export function isSaveEngineKeyPayload(v: unknown): v is SaveEngineKeyPayload {
+  if (!isRecord(v)) return false;
+  if (!Object.keys(v).every((k) => k === 'values')) return false;
+  const values = v['values'];
+  if (!isRecord(values)) return false;
+  const entries = Object.entries(values);
+  if (entries.length === 0 || entries.length > 16) return false;
+  return entries.every(([name, value]) => ENV_NAME.test(name) && typeof value === 'string' && isEngineKeyValue(value));
+}
+
+/** Validates a ClearEngineKeyPayload. */
+export function isClearEngineKeyPayload(v: unknown): v is ClearEngineKeyPayload {
+  if (!isRecord(v)) return false;
+  if (!Object.keys(v).every((k) => k === 'id')) return false;
+  return typeof v['id'] === 'string' && /^[a-z][a-z0-9-]{0,40}$/.test(v['id']);
+}
+
+/** Validates a SaveEngineSettingsPayload shape; the catalogue check happens in the controller. */
+export function isSaveEngineSettingsPayload(v: unknown): v is SaveEngineSettingsPayload {
+  if (!isRecord(v)) return false;
+  if (!Object.keys(v).every((k) => k === 'patch')) return false;
+  const patch = v['patch'];
+  if (!isRecord(patch)) return false;
+  const entries = Object.entries(patch);
+  if (entries.length === 0 || entries.length > 200) return false;
+  return entries.every(
+    ([name, value]) =>
+      ENV_NAME.test(name) &&
+      (value === null || (typeof value === 'string' && value.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(value))),
+  );
 }
 
 /** Only https: and mailto: URLs may be handed to the system (brief 01 §7). */

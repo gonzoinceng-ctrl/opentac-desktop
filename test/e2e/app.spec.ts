@@ -105,13 +105,23 @@ test('reaches RUNNING and shows the engine page', async () => {
 });
 
 test('the setup window is hidden while RUNNING', async () => {
-  const infos = await windowInfos();
-  const setup = infos.filter((w) => w.url.startsWith('app://'));
-  expect(setup.length).toBeGreaterThan(0);
-  expect(setup.every((w) => !w.visible)).toBe(true);
-  const engine = infos.filter((w) => ENGINE_URL.test(w.url));
-  expect(engine).toHaveLength(1);
-  expect(engine[0]?.visible).toBe(true);
+  // Window visibility settles asynchronously on a cold CI runner: poll instead of a single read.
+  await expect
+    .poll(
+      async () => {
+        const infos = await windowInfos();
+        const setup = infos.filter((w) => w.url.startsWith('app://'));
+        const engine = infos.filter((w) => ENGINE_URL.test(w.url));
+        return {
+          setupCount: setup.length,
+          setupHidden: setup.every((w) => !w.visible),
+          engineCount: engine.length,
+          engineVisible: engine[0]?.visible ?? false,
+        };
+      },
+      { timeout: 15_000, intervals: [250, 500, 1000] },
+    )
+    .toEqual({ setupCount: 1, setupHidden: true, engineCount: 1, engineVisible: true });
 });
 
 test('window.open to https goes to the system browser, not a new window', async () => {
@@ -162,6 +172,54 @@ test('an engine update shows its disclosure; Later hides the setup window again'
     .toBe(false);
   // The engine was not touched.
   expect(main.url()).toMatch(ENGINE_URL);
+});
+
+test('Preferences > API keys lists the engine registry and saving a key marks it set', async () => {
+  await app.evaluate(({ Menu }) => {
+    type Item = Electron.MenuItem;
+    const find = (items: Item[], label: string): Item | undefined => {
+      for (const item of items) {
+        if (item.label === label) return item;
+        if (item.submenu !== undefined && item.submenu !== null) {
+          const hit = find(item.submenu.items, label);
+          if (hit !== undefined) return hit;
+        }
+      }
+      return undefined;
+    };
+    const menu = Menu.getApplicationMenu();
+    const item = menu === null ? undefined : find(menu.items, 'Preferences…');
+    if (item === undefined) throw new Error('menu item "Preferences…" not found');
+    item.click();
+  });
+
+  const setup = await findWindow((u) => u.startsWith('app://'), 10_000);
+  await expect(setup.locator('#panel-preferences')).toBeVisible({ timeout: 15_000 });
+  await setup.locator('#tab-keys').click();
+  await expect(setup.locator('#tabpanel-keys')).toBeVisible();
+
+  // The rows come from the fake engine's /api/setup/status (two keys), not from the static catalogue.
+  await expect(setup.locator('#keys-summary')).toHaveText('0 of 2 keys are set.', { timeout: 15_000 });
+  const row = setup.locator('[data-key-id="aisstream"]');
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute('data-state', 'unset');
+
+  await row.locator('input[data-env-var="AISSTREAM_API_KEY"]').fill('e2e-test-key-1234567890');
+  await row.locator('[data-role="save"]').click();
+
+  await expect(row).toHaveAttribute('data-state', 'set', { timeout: 15_000 });
+  await expect(row.locator('[data-role="state"]')).toHaveText('Set');
+  await expect(setup.locator('#keys-summary')).toHaveText('1 of 2 keys are set.', { timeout: 15_000 });
+  // The engine restarts itself without exiting: the app must not have gone to CRASHED.
+  expect(main.url()).toMatch(ENGINE_URL);
+  await expect(setup.locator('#panel-crash')).toBeHidden();
+
+  await setup.locator('#btn-prefs-close').click();
+  await expect
+    .poll(async () => (await windowInfos()).filter((w) => w.url.startsWith('app://')).some((w) => w.visible), {
+      timeout: 15_000,
+    })
+    .toBe(false);
 });
 
 test('quitting stops the engine process', async () => {

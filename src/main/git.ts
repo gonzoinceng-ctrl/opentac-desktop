@@ -113,6 +113,11 @@ export interface GitRunnerOptions {
   log: Logger;
   /** Extra environment for every call (HOME and identity overrides in tests). */
   baseEnv?: Record<string, string>;
+  /**
+   * Proxy variables (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) read on every call, so a change in App
+   * settings applies to the next git command. Nothing else can come through this hook.
+   */
+  proxyEnv?: () => Record<string, string>;
   /** Replacement for dugite's exec, for tests. */
   execImpl?: typeof exec;
   /** How long a killed process may take to exit before SIGKILL / giving up; default 2000 ms. */
@@ -142,10 +147,13 @@ const SCRUBBED_ENV = [
 /** Prefix of every git control variable; any inherited one not set by the runner is removed. */
 const GIT_VAR_PREFIX = 'GIT_';
 
+const PROXY_VARS: readonly string[] = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'];
+
 function buildEnv(
   gitDir: string,
   baseEnv: Record<string, string> | undefined,
   callEnv: Record<string, string> | undefined,
+  proxyEnv: Record<string, string> | undefined,
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const name of SCRUBBED_ENV) env[name] = undefined;
@@ -177,6 +185,12 @@ function buildEnv(
     GIT_CONFIG_KEY_3: 'core.quotePath',
     GIT_CONFIG_VALUE_3: 'false',
   });
+  if (proxyEnv !== undefined) {
+    for (const name of PROXY_VARS) {
+      const v = proxyEnv[name];
+      if (v !== undefined && v !== '') env[name] = v;
+    }
+  }
   if (callEnv !== undefined) Object.assign(env, callEnv);
   return env;
 }
@@ -266,7 +280,7 @@ export function createGitRunner(opts: GitRunnerOptions): GitRunner {
       const timeoutMs = runOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const expectZero = runOpts.expectZero ?? true;
       const label = `git ${args.map((a) => redactRemoteUrl(a)).join(' ')}`;
-      const env = buildEnv(opts.gitDir, opts.baseEnv, runOpts.env);
+      const env = buildEnv(opts.gitDir, opts.baseEnv, runOpts.env, opts.proxyEnv?.());
       const startedAt = performance.now();
       const stopTimer = log.time(label);
       log.info(`${label} starting (timeout ${timeoutMs}ms)`);

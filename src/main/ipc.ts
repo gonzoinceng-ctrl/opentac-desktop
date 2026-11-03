@@ -4,8 +4,12 @@ import type { IpcMainInvokeEvent, Shell } from 'electron';
 import {
   IPC,
   isActionName,
+  isAppSettingsPatch,
+  isClearEngineKeyPayload,
   isExternalUrl,
   isPrefsPatch,
+  isSaveEngineKeyPayload,
+  isSaveEngineSettingsPayload,
   isSetAiKeyPayload,
   isSetAiPayload,
   isUsbChoice,
@@ -24,7 +28,7 @@ export interface IpcOptions {
   controller: ControllerApi;
   ui: Pick<ShellUiFull, 'pushState' | 'usbPickerDevices' | 'chooseUsb' | 'engineOrigin'>;
   log: Logger;
-  paths: Pick<Paths, 'logsDir'>;
+  paths: Pick<Paths, 'logsDir' | 'dataDir'>;
   shell: Pick<Shell, 'openExternal' | 'openPath'>;
 }
 
@@ -93,6 +97,11 @@ export function registerIpc(opts: IpcOptions): () => void {
       if (err !== '') log.warn(`could not open the logs folder: ${err}`);
       return;
     }
+    if (name === 'openDataFolder') {
+      const err = await shell.openPath(paths.dataDir);
+      if (err !== '') log.warn(`could not open the data folder: ${err}`);
+      return;
+    }
     await controller.action(name);
   });
   handle(IPC.setPrefs, async (_e, patch) => {
@@ -108,6 +117,24 @@ export function registerIpc(opts: IpcOptions): () => void {
     await controller.setAiKey(payload);
   });
   handle(IPC.testAi, () => controller.testAi());
+  handle(IPC.setAppSettings, async (_e, patch) => {
+    if (!isAppSettingsPatch(patch)) invalid();
+    await controller.setAppSettings(patch);
+  });
+  handle(IPC.getEngineKeys, () => controller.getEngineKeys());
+  handle(IPC.saveEngineKey, (_e, payload) => {
+    if (!isSaveEngineKeyPayload(payload)) invalid();
+    return controller.saveEngineKey(payload);
+  });
+  handle(IPC.clearEngineKey, (_e, payload) => {
+    if (!isClearEngineKeyPayload(payload)) invalid();
+    return controller.clearEngineKey(payload);
+  });
+  handle(IPC.getEngineSettings, () => controller.getEngineSettings());
+  handle(IPC.saveEngineSettings, (_e, payload) => {
+    if (!isSaveEngineSettingsPayload(payload)) invalid();
+    return controller.saveEngineSettings(payload);
+  });
   handle(IPC.listOllamaModels, () => controller.listOllamaModels());
 
   // USB chooser page.

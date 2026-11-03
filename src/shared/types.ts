@@ -25,6 +25,29 @@ export interface UsbDeviceId {
   serialNumber?: string;
 }
 
+/** How often background engine update checks run (docs/SHELL-DESIGN.md section 14). */
+export type UpdateCheckInterval = 'launch-only' | '6h' | 'daily';
+
+/** Log level chosen in App settings; `default` leaves the built-in levels in place. */
+export type LogLevelSetting = 'default' | 'error' | 'warn' | 'info' | 'debug';
+
+/** Proxy settings handed to the engine, git and npm. Addresses never carry credentials. */
+export interface ProxySettings {
+  httpsProxy: string | null;
+  noProxy: string | null;
+}
+
+/** OpenTac's own settings (state.json `app`). Contains no secrets. */
+export interface AppSettings {
+  launchAtLogin: boolean;
+  autoRestartOnCrash: boolean;
+  updateCheckInterval: UpdateCheckInterval;
+  logLevel: LogLevelSetting;
+  proxy: ProxySettings;
+  /** Advanced: an https:// or file:// engine mirror used instead of `remoteUrl`; null = default. */
+  engineRemoteUrl: string | null;
+}
+
 /** Persisted shell state (state.json). Provider API keys live in Keychain, never here. */
 export interface ShellState {
   schemaVersion: 1;
@@ -44,4 +67,6 @@ export interface ShellState {
   mainWindowBounds: WindowBounds | null;
   usbDevices: UsbDeviceId[];
   ai: { provider: AiProvider; model: string | null; ollamaHost: string | null };
+  /** OpenTac's own settings; missing fields fill from defaults, schemaVersion stays 1. */
+  app: AppSettings;
 }

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Fake OpenTac launcher for server.ts tests. Plain Node ESM, no dependencies.
+// Also answers a minimal slice of the engine's key setup endpoints (GET /api/setup/status,
+// POST /api/setup/keys) with two registry keys held in memory, so the Preferences screen can be
+// driven end to end without the real engine.
 // FAKE_MODE: ok | eaddrinuse | eaddrinuse-exit1 | fail | crash-after-ready | slow |
 //            vite-missing | no-stdin-exit | stubborn
 import { createServer } from 'node:http';
@@ -66,10 +69,84 @@ if (mode === 'stubborn') {
 console.log(`[fake] cwd ${process.cwd()}`);
 console.log(`[fake] env-keys ${Object.keys(process.env).sort().join(',')}`);
 
+// In-memory stand-in for the engine's key registry (two rows, like upstream's payload shape).
+const fakeKeys = [
+  {
+    id: 'google-maps',
+    title: 'GOOGLE MAPS',
+    unlocks: 'The photorealistic 3D planet, place search + Street View',
+    getUrl: 'https://developers.google.com/maps/documentation/tile/get-api-key',
+    envVars: ['GOOGLE_MAPS_API_KEY'],
+    tier: 'metered',
+    clientExposed: true,
+    set: false,
+  },
+  {
+    id: 'aisstream',
+    title: 'AISSTREAM',
+    unlocks: 'Live ships, worldwide',
+    getUrl: 'https://aisstream.io',
+    envVars: ['AISSTREAM_API_KEY'],
+    tier: 'free',
+    clientExposed: false,
+    set: false,
+  },
+];
+const fakeValues = new Map();
+
+function keyStatus() {
+  const keys = fakeKeys.map((k) => {
+    const set = k.envVars.every((v) => (fakeValues.get(v) ?? '') !== '');
+    return { ...k, set, managed: set ? 'file' : null };
+  });
+  return { keys, setCount: keys.filter((k) => k.set).length, total: keys.length, store: 'env-file' };
+}
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(payload));
+}
+
+function handleSetup(req, res) {
+  const origin = `http://${host}:${port}`;
+  if (req.url === '/api/setup/status' && req.method === 'GET') return sendJson(res, 200, keyStatus());
+  if (req.url === '/api/setup/keys' && req.method === 'POST') {
+    // Same gate shape as upstream: exact local Origin and a JSON content type.
+    if (req.headers.origin !== origin) return sendJson(res, 403, { error: 'origin', code: 'origin-required' });
+    if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) {
+      return sendJson(res, 415, { error: 'content-type', code: 'content-type' });
+    }
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      let updates;
+      try {
+        updates = JSON.parse(body || '{}');
+      } catch {
+        return sendJson(res, 400, { error: 'json', code: 'invalid-json' });
+      }
+      const known = new Set(fakeKeys.flatMap((k) => k.envVars));
+      for (const name of Object.keys(updates)) {
+        if (!known.has(name)) return sendJson(res, 400, { error: `Unknown key: ${name}`, code: 'unknown-key' });
+      }
+      for (const [name, value] of Object.entries(updates)) fakeValues.set(name, value === null ? '' : value);
+      // The real engine restarts itself ~250 ms later without the process exiting; nothing to do here.
+      sendJson(res, 200, { ok: true, saved: Object.keys(updates), status: keyStatus(), restarting: true });
+    });
+    return undefined;
+  }
+  return false;
+}
+
 if (mode === 'slow') {
   setInterval(() => {}, 1000);
 } else {
   server = createServer((req, res) => {
+    if (typeof req.url === 'string' && req.url.startsWith('/api/setup/')) {
+      if (handleSetup(req, res) !== false) return;
+    }
     res.writeHead(req.url === '/' ? 200 : 404, { 'content-type': 'text/html' });
     res.end('<html><canvas></canvas>');
   });

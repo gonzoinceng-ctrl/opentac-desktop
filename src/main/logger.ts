@@ -93,13 +93,19 @@ export interface LogLevels {
 
 /**
  * Pure: picks the file and console log levels. OPENTAC_LOG_LEVEL (error|warn|info|debug,
- * case-insensitive; anything else is ignored) sets both. Defaults: file `info`; console `debug`
- * when unpackaged, `warn` when packaged.
+ * case-insensitive; anything else is ignored) sets both and wins. Next comes the App settings
+ * level (`setting`, anything but `default`), which also sets both. Defaults: file `info`; console
+ * `debug` when unpackaged, `warn` when packaged.
  */
-export function resolveLogLevels(env: NodeJS.ProcessEnv, isPackaged: boolean): LogLevels {
+export function resolveLogLevels(
+  env: NodeJS.ProcessEnv,
+  isPackaged: boolean,
+  setting: LogLevel | 'default' = 'default',
+): LogLevels {
   const raw = env['OPENTAC_LOG_LEVEL']?.trim().toLowerCase();
   const override = LOG_LEVELS.find((l) => l === raw);
   if (override !== undefined) return { fileLevel: override, consoleLevel: override };
+  if (setting !== 'default') return { fileLevel: setting, consoleLevel: setting };
   return { fileLevel: 'info', consoleLevel: isPackaged ? 'warn' : 'debug' };
 }
 

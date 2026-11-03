@@ -33,7 +33,7 @@ describe('defaultState', () => {
     expect(s.remoteUrl).toBe(DEFAULT_REMOTE_URL);
     expect(DEFAULT_REMOTE_URL).toBe('https://github.com/gonzoinceng-ctrl/opentac-engine.git');
     expect(s.updateCheckOnLaunch).toBe(true);
-    expect(s.ai).toEqual({ provider: 'openai', model: null, ollamaHost: null });
+    expect(s.ai).toEqual({ provider: 'ollama', model: 'qwen3.5:9b-mlx', ollamaHost: null });
     expect(s.usbDevices).toEqual([]);
     expect(s.mainWindowBounds).toBeNull();
     expect(defaultState().usbDevices).not.toBe(s.usbDevices);

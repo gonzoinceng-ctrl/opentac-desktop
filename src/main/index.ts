@@ -19,6 +19,7 @@ import {
 } from 'electron';
 
 import type { ShellState, WindowBounds } from '../shared/types.js';
+import { proxyEnvFor } from '../shared/appSettings.js';
 import { createAiGateway } from './aiGateway.js';
 import { createCheckoutManager } from './checkout.js';
 import { createController, resolveDevOverrides } from './controller.js';
@@ -38,7 +39,7 @@ import { createRingBuffer } from './ringBuffer.js';
 import { createSecrets } from './secrets.js';
 import { createServerManager } from './server.js';
 import { createShellUpdater } from './shellUpdate.js';
-import { loadState, saveState } from './state.js';
+import { loadState, readLogLevelSetting, saveState } from './state.js';
 import { createShellUi } from './windows.js';
 
 // ---------------------------------------------------------------------------
@@ -208,7 +209,9 @@ async function boot(): Promise<void> {
   const paths = applyDevOverrides(resolvedPaths, process.env);
   ensureDataDirs(paths);
 
-  const sink = await createElectronLogSink(resolveLogLevels(process.env, app.isPackaged));
+  // OPENTAC_LOG_LEVEL wins, then the App settings level (applies at next launch), then the defaults.
+  const logLevelSetting = await readLogLevelSetting(paths.stateFile);
+  const sink = await createElectronLogSink(resolveLogLevels(process.env, app.isPackaged, logLevelSetting));
   // electron-log picks its own default location; pin the file to Paths.mainLog so that Copy
   // Diagnostics, "Show Logs" and an OPENTAC_DATA_DIR run all agree on one place.
   const electronLog = (await import('electron-log/main.js')).default;
@@ -237,9 +240,11 @@ async function boot(): Promise<void> {
   registerAppProtocol(rendererRoot, log);
 
   // Engine plumbing.
-  const git = createGitRunner({ gitDir: paths.gitDir, log: log.scope('git') });
+  // Proxy from App settings, read per call so a change applies to the next git or npm command.
+  const proxyEnv = (): Record<string, string> => proxyEnvFor((controllerRef?.state() ?? initialState).app.proxy);
+  const git = createGitRunner({ gitDir: paths.gitDir, log: log.scope('git'), proxyEnv });
   const checkout = createCheckoutManager({ checkoutDir: paths.checkoutDir, git, log: log.scope('checkout') });
-  const install = createInstallManager({ paths, log: log.scope('install') });
+  const install = createInstallManager({ paths, log: log.scope('install'), proxyEnv });
   const ring = createRingBuffer();
   const server = createServerManager({
     nodeBin: paths.nodeBin,
@@ -337,6 +342,17 @@ async function boot(): Promise<void> {
     env: process.env,
     isPackaged: app.isPackaged,
     requestQuit: () => app.quit(),
+    setLoginItem: (openAtLogin) => {
+      // An unpackaged run would register the bare Electron binary as a login item.
+      if (!app.isPackaged) {
+        log.info(`launch at login not changed: this build is not packaged (wanted ${String(openAtLogin)})`);
+        return;
+      }
+      app.setLoginItemSettings({ openAtLogin });
+    },
+    forgetUsbDevices: () => {
+      usbDevices = [];
+    },
   });
   controllerRef = controller;
 

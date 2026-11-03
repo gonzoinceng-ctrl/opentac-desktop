@@ -23,7 +23,11 @@ npm run e2e     # playwright test -c test/e2e/playwright.config.ts
 4. Engine update: the mirror's `stable` moves to c3, the Engine menu item
    "Check for Engine Updates…" is clicked, the setup window shows the disclosure with a commit list,
    "Later" hides it again.
-5. Quit stops the app and no fake launcher process remains (`pgrep`).
+5. Preferences (menu item "Preferences…") › API keys: the rows come from the fake engine's
+   `GET /api/setup/status` (two keys, served by `test/fixtures/fake-launcher.mjs`), entering a value and
+   pressing Save posts to its `POST /api/setup/keys` (which checks the exact local `Origin`), the row
+   becomes Set, and the app never leaves RUNNING for CRASHED.
+6. Quit stops the app and no fake launcher process remains (`pgrep`).
 
 ## How the data directory is prepared (`prepare.ts`)
 

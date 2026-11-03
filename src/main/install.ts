@@ -92,6 +92,8 @@ export interface InstallManagerOptions {
   log: Logger;
   /** Extra environment applied over the clean base (HOME, TMPDIR, test hooks); npm_config_* ignored. */
   env?: Record<string, string>;
+  /** Proxy variables (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) read on every npm run; nothing else. */
+  proxyEnv?: () => Record<string, string>;
   /** Delay before the network retry; default 3000 ms (tests shorten it). */
   retryDelayMs?: number;
 }
@@ -132,6 +134,18 @@ export function buildNpmEnv(opts: {
     npm_config_audit: 'false',
     NO_COLOR: '1',
   };
+}
+
+const PROXY_VARS: readonly string[] = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY'];
+
+function pickProxyEnv(proxy: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (proxy === undefined) return out;
+  for (const name of PROXY_VARS) {
+    const v = proxy[name];
+    if (v !== undefined && v !== '') out[name] = v;
+  }
+  return out;
 }
 
 interface RunOptions {
@@ -307,6 +321,7 @@ export function createInstallManager(opts: InstallManagerOptions): InstallManage
         npmCacheDir: paths.npmCacheDir,
       }),
       ...extra,
+      ...pickProxyEnv(opts.proxyEnv?.()),
     };
   }
 

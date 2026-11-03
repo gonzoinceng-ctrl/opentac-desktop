@@ -6,9 +6,17 @@
 import type {
   ActionName,
   AiTestResultPublic,
+  AppSettingsPatch,
+  ClearEngineKeyPayload,
   Disclosure,
+  EngineKeySaveResult,
+  EngineKeysPublic,
+  EngineSettingsPublic,
   Phase,
   PublicState,
+  SaveEngineKeyPayload,
+  SaveEngineSettingsPayload,
+  SaveEngineSettingsResult,
   SetAiKeyPayload,
   SetAiPayload,
   Prefs,
@@ -53,6 +61,17 @@ export interface ControllerApi {
   setAi(payload: SetAiPayload): Promise<void>;
   setAiKey(payload: SetAiKeyPayload): Promise<void>;
   testAi(): Promise<AiTestResultPublic>;
+  /** OpenTac's own settings (state.json `app`); applied and saved immediately. */
+  setAppSettings(patch: AppSettingsPatch): Promise<void>;
+  /** Engine API key list, read live from the running engine (else from the catalogue and .env). */
+  getEngineKeys(): Promise<EngineKeysPublic>;
+  /** Sends keys to the engine's own endpoint; the engine restarts itself (no phase change here). */
+  saveEngineKey(payload: SaveEngineKeyPayload): Promise<EngineKeySaveResult>;
+  clearEngineKey(payload: ClearEngineKeyPayload): Promise<EngineKeySaveResult>;
+  /** Engine settings from the engine .env (catalogue keys only; secrets never returned). */
+  getEngineSettings(): Promise<EngineSettingsPublic>;
+  /** Writes settings into the engine .env, then restarts the engine when it is running. */
+  saveEngineSettings(payload: SaveEngineSettingsPayload): Promise<SaveEngineSettingsResult>;
   listOllamaModels(): Promise<{ models: string[]; error: string | null }>;
   versions(): Promise<Versions>;
   /** Engine URL while RUNNING, else null. */
