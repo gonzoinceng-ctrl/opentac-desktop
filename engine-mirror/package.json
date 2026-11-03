@@ -1,0 +1,10 @@
+{
+  "name": "opentac-engine-ci",
+  "private": true,
+  "description": "Gate scripts for the OpenTac engine mirror. No dependencies.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test \"ci/test/*.test.mjs\""
+  }
+}

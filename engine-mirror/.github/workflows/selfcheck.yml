@@ -1,0 +1,82 @@
+name: selfcheck
+
+# Weekly. Verifies the "zero engine commits" invariant against the REAL upstream:
+#   1. every commit reachable from `stable`, `candidate` and any `stable-*` tag is
+#      reachable from upstream's live `main`;
+#   2. no branch named `main` exists on this mirror (so upstream's own ci.yml,
+#      which triggers on pushes to `main`, can never fire here).
+# Opens an issue on violation and fails the run.
+
+on:
+  schedule:
+    - cron: '31 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the CI branch
+        uses: actions/checkout@v4
+        with:
+          path: ci
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch the mirror's engine refs and live upstream main
+        run: |
+          source ci/lib.sh
+          engine_init engine
+          cd engine
+          engine_fetch
+          upstream_fetch
+
+      - name: Verify the invariant
+        run: |
+          source ci/lib.sh
+          cd engine
+          problems=()
+
+          if git ls-remote --exit-code --heads origin main > /dev/null 2>&1; then
+            problems+=("a branch named \`main\` exists on the mirror (upstream's ci.yml would fire on it)")
+          fi
+
+          check_ref() {
+            local ref=$1 label=$2 foreign count
+            if ! git rev-parse --verify --quiet "${ref}^{commit}" > /dev/null; then return 0; fi
+            foreign=$(git rev-list "${ref}^{commit}" --not refs/remotes/upstream/main | head -n 5)
+            if [ -n "$foreign" ]; then
+              count=$(git rev-list --count "${ref}^{commit}" --not refs/remotes/upstream/main)
+              problems+=("${label} contains ${count} commit(s) that are not in upstream main's history, e.g. $(echo "$foreign" | head -n 1 | cut -c1-12)")
+            fi
+          }
+          check_ref refs/remotes/origin/stable "stable"
+          check_ref refs/remotes/origin/candidate "candidate"
+          while read -r t; do
+            [ -n "$t" ] && check_ref "refs/tags/${t}" "tag ${t}"
+          done < <(git tag --list 'stable-*')
+
+          if [ "${#problems[@]}" -gt 0 ]; then
+            {
+              echo "The mirror no longer satisfies its invariant: **every commit reachable from \`stable\` and \`candidate\` must exist in upstream's history, and the mirror must have no \`main\` branch.**"
+              echo
+              printf -- '- %s\n' "${problems[@]}"
+              echo
+              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "Do not promote until this is understood. If upstream force-pushed main, see the history-rewrite issue (if any)."
+            } > ../violation.md
+            issue_upsert selfcheck-failed "Mirror invariant violated" ../violation.md
+            printf '::error title=Invariant violated::%s\n' "${problems[@]}"
+            exit 1
+          fi
+          echo "invariant holds: stable, candidate and stable-* tags are all in upstream main's history"

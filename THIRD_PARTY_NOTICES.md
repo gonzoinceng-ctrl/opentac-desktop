@@ -17,7 +17,7 @@ Copyright (c) Bilawal Sidhu. https://github.com/bilawalsidhu/gods-eye-view
 
 ## App icon
 
-`build/icon-source.svg` is upstream's `public/logo.svg` (God's Eye View, MIT,
-© Bilawal Sidhu), reproduced unmodified. `scripts/make-icon.mjs` composites it
-onto a dark rounded tile to produce `build/icon.icns`. The OpenTac website uses
-its own distinct mark, not this logo.
+`build/icon-source.svg` is an original OpenTac mark (reticle over a horizon arc). It is
+deliberately **not** derived from upstream's `public/logo.svg`, so that OpenTac never presents
+God's Eye View's identity as its own (brief 01 §12, 06 §5). `scripts/make-icon.mjs` renders it to
+`build/icon.icns`.

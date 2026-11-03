@@ -40,7 +40,7 @@ for (const [target, expected] of Object.entries(SHA256)) {
   mkdirSync(dest, { recursive: true });
   const prefix = `node-v${NODE_VERSION}-${target}`;
   const tar = spawnSync('tar', ['-xzf', tgz, '-C', dest, '--strip-components=1',
-    `${prefix}/bin/node`, `${prefix}/lib/node_modules/npm`, `${prefix}/LICENSE`], { stdio: 'inherit' });
+    `${prefix}/bin/node`, `${prefix}/bin/npm`, `${prefix}/bin/npx`, `${prefix}/lib/node_modules/npm`, `${prefix}/LICENSE`], { stdio: 'inherit' });
   if (tar.status !== 0) throw new Error('[fetch-node] tar failed');
   rmSync(tgz);
   writeFileSync(marker, `${NODE_VERSION}\n`);

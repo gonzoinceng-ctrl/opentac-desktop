@@ -41,13 +41,19 @@ if (process.env.OPENTAC_AI_GATEWAY_URL) {
   const REWRITES = new Map([
     ['https://api.openai.com/v1/responses', `${gateway}/v1/responses`],
   ]);
+  // Per-launch shared secret so only this engine process can spend the gateway's provider keys.
+  const token = process.env.OPENTAC_AI_GATEWAY_TOKEN || '';
   const realFetch = globalThis.fetch;
   globalThis.fetch = (input, init) => {
-    const url = typeof input === 'string' ? input : input?.url;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
     const target = url && REWRITES.get(url);
     if (!target) return realFetch(input, init);
     console.log(`[OpenTac] AI gateway: ${url} -> ${target}`);
-    return realFetch(typeof input === 'string' ? target : new Request(target, input), init);
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.delete('authorization'); // the gateway holds its own backend key; never forward the engine's
+    if (token) headers.set('x-opentac-gateway-token', token);
+    const nextInit = { ...(init ?? {}), headers };
+    return realFetch(typeof input === 'string' || input instanceof URL ? target : new Request(target, input), nextInit);
   };
 }
 
@@ -96,6 +102,7 @@ async function main() {
 
 main().catch((error) => {
   const message = error?.message || String(error);
-  if (/EADDRINUSE/.test(message)) fail(`EADDRINUSE: port ${port} is in use.`, 99);
+  // Vite with strictPort rejects with 'Port N is already in use' (no EADDRINUSE in the text).
+  if (/already in use|EADDRINUSE/i.test(message)) fail(`EADDRINUSE: port ${port} is in use.`, 99);
   fail(`Start failed: ${message}`);
 });

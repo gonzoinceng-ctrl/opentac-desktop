@@ -1,0 +1,540 @@
+name: gate
+
+# The tests for one engine commit (08-STAGED-UPDATES.md section 3.3, as amended
+# by DECISIONS.md "Staged update pipeline"). Called by intake.yml with an
+# explicit SHA, or run by hand. The gate never sees a ref NAME, only a SHA.
+#
+#   contracts : ubuntu. Upstream's own npm ci / doctor / test / build with the
+#               SAME Node the app ships, then ci/contracts.mjs and the size /
+#               dependency diff against `stable`.
+#   smoke     : macOS arm64 (blocking) and Intel (non-blocking at first). Runs
+#               the OpenTac app's Playwright e2e against this SHA.
+#   verdict   : assembles gate-report.md and decides green or red.
+#
+# No `concurrency:` here on purpose: when called from intake.yml the caller's
+# `engine-refs` group already serialises, and a second claim would deadlock.
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Full 40-character engine commit SHA to test
+        required: true
+        type: string
+      shell_ref:
+        description: "OpenTac app under test: latest-release, main, or an app tag/branch"
+        required: false
+        type: string
+        default: latest-release
+    outputs:
+      result:
+        description: green or red
+        value: ${{ jobs.verdict.outputs.result }}
+      report_url:
+        description: URL of this workflow run (the gate-report artifact is attached to it)
+        value: ${{ jobs.verdict.outputs.report_url }}
+      failure:
+        description: One-line summary of what failed (empty when green)
+        value: ${{ jobs.verdict.outputs.failure }}
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character engine commit SHA to test
+        required: true
+        type: string
+      shell_ref:
+        description: "OpenTac app under test: latest-release, main, or an app tag/branch"
+        required: false
+        type: string
+        default: latest-release
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: bilawalsidhu/gods-eye-view
+  APP_REPO: OWNER/opentac-desktop
+  MIRROR_URL: https://github.com/OWNER/opentac-engine
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Validate the SHA input
+        run: |
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Bad input::sha must be a full 40-character lowercase hex commit id"
+            exit 1
+          fi
+
+      - name: Check out the engine at the candidate SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          path: engine
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the CI branch
+        uses: actions/checkout@v4
+        with:
+          path: ci
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The Node the gate uses is the Node the app ships: one machine-readable file in the app repo.
+      - name: Read the bundled Node version from the app repo
+        id: nodever
+        run: |
+          url="https://raw.githubusercontent.com/${APP_REPO}/main/scripts/node-version.json"
+          if ! curl -fsSL --retry 3 --retry-delay 2 -o node-version.json "$url"; then
+            echo "::error title=node-version.json missing::could not download ${url}. The gate cannot guess a Node version."
+            exit 1
+          fi
+          version=$(jq -r '.version // empty' node-version.json)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Bad node-version.json::version field is missing or not X.Y.Z"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "TIMINGS_FILE=${RUNNER_TEMP}/timings.tsv" >> "$GITHUB_ENV"
+          mkdir -p parts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nodever.outputs.version }}
+
+      - name: npm ci
+        id: npmci
+        continue-on-error: true
+        working-directory: engine
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
+        run: |
+          source ../ci/lib.sh
+          node --version
+          npm --version
+          timed npm-ci npm ci
+
+      - name: npm run doctor (report only)
+        id: doctor
+        continue-on-error: true
+        if: ${{ steps.npmci.outcome == 'success' }}
+        working-directory: engine
+        run: |
+          source ../ci/lib.sh
+          timed doctor npm run doctor
+
+      - name: npm test
+        id: test
+        continue-on-error: true
+        if: ${{ steps.npmci.outcome == 'success' }}
+        working-directory: engine
+        run: |
+          source ../ci/lib.sh
+          timed test npm test
+
+      - name: npm run build
+        id: build
+        continue-on-error: true
+        if: ${{ steps.npmci.outcome == 'success' }}
+        working-directory: engine
+        run: |
+          source ../ci/lib.sh
+          timed build npm run build
+
+      - name: Contract checks
+        id: contracts
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        env:
+          NODE_VER: ${{ steps.nodever.outputs.version }}
+        run: |
+          source ci/lib.sh
+          rc=0
+          timed contracts node ci/contracts.mjs engine --node "$NODE_VER" --md > parts/contracts.md || rc=$?
+          node ci/contracts.mjs engine --node "$NODE_VER" --json > parts/contracts.json || true
+          cat parts/contracts.md
+          exit "$rc"
+
+      - name: Size and dependency diff against stable
+        id: deps
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        run: |
+          cd engine
+          stable=$(git rev-parse --verify --quiet 'refs/remotes/origin/stable^{commit}' || true)
+          old=-
+          if [ -n "$stable" ] && git show "${stable}:package-lock.json" > ../old-lock.json 2> /dev/null; then
+            old=../old-lock.json
+          fi
+          node ../ci/depdiff.mjs "$old" package-lock.json > ../parts/deps.md
+          {
+            if [ -n "$stable" ]; then
+              echo '```'
+              git diff --stat "$stable" "$SHA" -- package.json package-lock.json | tail -n 5
+              echo '```'
+            fi
+          } >> ../parts/deps.md
+          nm_kb=0
+          if [ -d node_modules ]; then nm_kb=$(du -sk node_modules | cut -f1); fi
+          top=0
+          if [ -d node_modules ]; then
+            top=$(npm ls --depth=0 --json 2> /dev/null | jq '.dependencies | length' || echo 0)
+          fi
+          {
+            echo "- node_modules: $((nm_kb / 1024)) MB"
+            echo "- top-level installed packages (npm ls --depth=0): ${top:-0}"
+          } > ../parts/size.md
+          echo "${stable}" > ../parts/stable-sha.txt
+          tag=$(git tag --points-at "$SHA" --list 'v*' | sort -V | tail -n 1)
+          echo "${tag:-main}" > ../parts/upstream-tag.txt
+
+      - name: Assemble report parts
+        id: parts
+        if: ${{ !cancelled() }}
+        env:
+          NPMCI: ${{ steps.npmci.outcome }}
+          DOCTOR: ${{ steps.doctor.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          CONTRACTS: ${{ steps.contracts.outcome }}
+          NODE_VER: ${{ steps.nodever.outputs.version }}
+        run: |
+          failed=()
+          [ "$NPMCI" = success ] || failed+=("npm ci")
+          [ "$TEST" = success ] || failed+=("npm test")
+          [ "$BUILD" = success ] || failed+=("npm run build")
+          [ "$CONTRACTS" = success ] || failed+=("contracts")
+          # Steps skipped because npm ci failed are already represented by npm ci.
+          first_contract=$(jq -r '[.results[]? | select(.status == "fail") | "\(.name): \(.message)"][0] // ""' parts/contracts.json 2> /dev/null || true)
+          {
+            echo '| Step | Result | Seconds |'
+            echo '|---|---|---|'
+            if [ -s "$TIMINGS_FILE" ]; then
+              awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, ($2 == 0 ? "ok" : "FAILED (exit " $2 ")"), $3 }' "$TIMINGS_FILE"
+            fi
+            echo
+            echo "(\`npm run doctor\` is report only: ${DOCTOR}.)"
+          } > parts/timings.md
+          printf '%s\n' "${failed[@]}" | jq -R . | jq -s \
+            --arg sha "$SHA" --arg node "$NODE_VER" --arg first "$first_contract" \
+            --arg stable "$(cat parts/stable-sha.txt 2> /dev/null || true)" \
+            '{sha: $sha, nodeVersion: $node, failedSteps: (map(select(. != ""))), firstContractFailure: $first, stableSha: $stable}' \
+            > parts/meta.json
+          cat parts/meta.json
+
+      - name: Upload report parts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-part-contracts
+          path: parts/
+          if-no-files-found: error
+
+      - name: Fail the job if any blocking step failed
+        if: ${{ !cancelled() }}
+        env:
+          NPMCI: ${{ steps.npmci.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          CONTRACTS: ${{ steps.contracts.outcome }}
+        run: |
+          bad=0
+          for pair in "npm-ci:$NPMCI" "test:$TEST" "build:$BUILD" "contracts:$CONTRACTS"; do
+            if [ "${pair#*:}" != success ]; then
+              echo "::error title=Gate step failed::${pair%%:*} -> ${pair#*:}"
+              bad=1
+            fi
+          done
+          exit "$bad"
+
+  smoke:
+    # PENDING until the app's e2e suite exists: while OWNER/opentac-desktop has no `npm run e2e`
+    # script, this job runs, reports "pending" in the gate report, and passes. The moment the
+    # script appears, the same job starts running it and gating on it. No edit needed here.
+    needs: contracts
+    if: ${{ needs.contracts.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            experimental: false
+          # Intel leg is non-blocking until it has proven stable (macos-15-intel).
+          - runner: macos-15-intel
+            arch: x64
+            experimental: true
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
+    env:
+      SHA: ${{ inputs.sha }}
+      SHELL_REF: ${{ inputs.shell_ref }}
+      ARCH: ${{ matrix.arch }}
+      EXPERIMENTAL: ${{ matrix.experimental }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Decide which OpenTac app to test
+        id: shell
+        run: |
+          mode=build
+          ref=main
+          case "$SHELL_REF" in
+            latest-release | '')
+              tag=$(gh release view --repo "$APP_REPO" --json tagName --jq .tagName 2> /dev/null || true)
+              if [ -n "$tag" ]; then
+                mode=release
+                ref=$tag
+              else
+                echo "::notice title=No app release yet::no published release in ${APP_REPO}; testing a build of app main instead"
+              fi
+              ;;
+            main) ;;
+            *) ref=$SHELL_REF ;;
+          esac
+          if ! [[ "$ref" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || [[ "$ref" == -* ]]; then
+            echo "::error title=Bad shell_ref::unexpected characters"
+            exit 1
+          fi
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          mkdir -p parts
+
+      - name: Check out the OpenTac app
+        uses: actions/checkout@v4
+        with:
+          repository: OWNER/opentac-desktop
+          ref: ${{ steps.shell.outputs.ref }}
+          path: app
+          token: ${{ secrets.ENGINE_PUSH_TOKEN || github.token }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Does the app have an e2e suite yet?
+        id: e2e
+        run: |
+          if jq -e '.scripts.e2e' app/package.json > /dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Smoke pending::${APP_REPO} has no 'npm run e2e' script; the compatibility smoke is PENDING and does not gate"
+          fi
+
+      - name: Install the app's dependencies
+        id: install
+        if: ${{ steps.e2e.outputs.present == 'true' }}
+        working-directory: app
+        run: |
+          npm ci
+          npm run fetch-node
+
+      - name: Get the .app (released zip or fresh unsigned build)
+        id: bundle
+        if: ${{ steps.e2e.outputs.present == 'true' }}
+        env:
+          MODE: ${{ steps.shell.outputs.mode }}
+          TAG: ${{ steps.shell.outputs.ref }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          if [ "$MODE" = release ]; then
+            if [ "$ARCH" = arm64 ]; then
+              name=$(gh release view "$TAG" --repo "$APP_REPO" --json assets --jq '[.assets[].name | select(test("arm64.*\\.zip$"))][0] // empty')
+            else
+              name=$(gh release view "$TAG" --repo "$APP_REPO" --json assets --jq '[.assets[].name | select(test("\\.zip$") and (test("arm64") | not))][0] // empty')
+            fi
+            if [ -z "$name" ]; then
+              echo "::error title=No zip asset::release ${TAG} has no ${ARCH} zip"
+              exit 1
+            fi
+            mkdir -p dl bundle
+            gh release download "$TAG" --repo "$APP_REPO" --pattern "$name" --dir dl
+            ditto -x -k "dl/${name}" bundle
+            app=$(find bundle -maxdepth 2 -name '*.app' -print -quit)
+          else
+            (cd app && npm run pack -- -c.mac.notarize=false)
+            if [ "$ARCH" = arm64 ]; then
+              app=$(find app/release -maxdepth 2 -name '*.app' -path '*arm64*' -print -quit)
+            else
+              app=$(find app/release -maxdepth 2 -name '*.app' -not -path '*arm64*' -print -quit)
+            fi
+          fi
+          if [ -z "$app" ]; then
+            echo "::error title=No .app::could not locate an app bundle for ${ARCH}"
+            exit 1
+          fi
+          echo "path=${GITHUB_WORKSPACE}/${app}" >> "$GITHUB_OUTPUT"
+
+      - name: Run the app's e2e smoke against this engine SHA
+        id: run
+        continue-on-error: true
+        if: ${{ steps.e2e.outputs.present == 'true' }}
+        working-directory: app
+        env:
+          OPENTAC_E2E_APP: ${{ steps.bundle.outputs.path }}
+          OPENTAC_ENGINE_REMOTE: ${{ env.MIRROR_URL }}
+          OPENTAC_ENGINE_REF: ${{ inputs.sha }}
+        run: |
+          export OPENTAC_DATA_DIR="${RUNNER_TEMP}/opentac-data"
+          rm -rf "$OPENTAC_DATA_DIR"
+          mkdir -p "$OPENTAC_DATA_DIR"
+          npm run e2e
+
+      - name: Write the smoke part
+        if: ${{ !cancelled() }}
+        env:
+          PRESENT: ${{ steps.e2e.outputs.present }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          BUNDLE_OUTCOME: ${{ steps.bundle.outcome }}
+          APP_MODE: ${{ steps.shell.outputs.mode }}
+          APP_REF: ${{ steps.shell.outputs.ref }}
+        run: |
+          if [ "$PRESENT" != true ]; then
+            state=PENDING
+            detail="the app repo has no \`npm run e2e\` yet, so this leg did not test the engine"
+          elif [ "$INSTALL_OUTCOME" != success ] || [ "$BUNDLE_OUTCOME" != success ]; then
+            state=FAILED
+            detail="could not prepare the app (install: ${INSTALL_OUTCOME}, bundle: ${BUNDLE_OUTCOME})"
+          elif [ "$RUN_OUTCOME" = success ]; then
+            state=PASSED
+            detail="e2e passed against the app ${APP_MODE} ${APP_REF}"
+          else
+            state=FAILED
+            detail="e2e failed against the app ${APP_MODE} ${APP_REF}"
+          fi
+          if [ "$state" = FAILED ] && [ "$EXPERIMENTAL" = true ]; then
+            detail="${detail} (experimental leg, does not block)"
+          fi
+          printf -- '- **%s** (%s): %s - %s\n' "$ARCH" "$([ "$EXPERIMENTAL" = true ] && echo experimental || echo blocking)" "$state" "$detail" > "parts/smoke-${ARCH}.md"
+          cat "parts/smoke-${ARCH}.md"
+
+      - name: Upload the smoke part
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-part-smoke-${{ matrix.arch }}
+          path: parts/
+
+      - name: Upload Playwright output
+        if: ${{ failure() && steps.e2e.outputs.present == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ matrix.arch }}
+          path: |
+            app/test-results
+            app/playwright-report
+          if-no-files-found: ignore
+
+      - name: Fail the leg if the e2e failed
+        if: ${{ steps.e2e.outputs.present == 'true' && (steps.run.outcome == 'failure' || steps.install.outcome == 'failure' || steps.bundle.outcome == 'failure') }}
+        run: |
+          echo "::error title=Smoke failed (${ARCH})::see the uploaded Playwright output"
+          exit 1
+
+  verdict:
+    needs: [contracts, smoke]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      result: ${{ steps.decide.outputs.result }}
+      report_url: ${{ steps.decide.outputs.report_url }}
+      failure: ${{ steps.decide.outputs.failure }}
+    env:
+      SHA: ${{ inputs.sha }}
+      SHELL_REF: ${{ inputs.shell_ref }}
+      CONTRACTS_RESULT: ${{ needs.contracts.result }}
+      SMOKE_RESULT: ${{ needs.smoke.result }}
+    steps:
+      - name: Check out the CI branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Download report parts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-part-*
+          path: parts
+          merge-multiple: true
+
+      - name: Decide and render gate-report.md
+        id: decide
+        run: |
+          mkdir -p parts
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          result=green
+          failure=""
+          [ "$CONTRACTS_RESULT" = success ] || { result=red; failure="contracts job: ${CONTRACTS_RESULT}"; }
+          case "$SMOKE_RESULT" in success | skipped) ;; *) result=red; failure="${failure:+${failure}; }smoke job: ${SMOKE_RESULT}" ;; esac
+          if [ -f parts/meta.json ]; then
+            steps_failed=$(jq -r '.failedSteps | join(", ")' parts/meta.json)
+            first=$(jq -r '.firstContractFailure' parts/meta.json)
+            [ -z "$steps_failed" ] || failure="failing step(s): ${steps_failed}"
+            [ -z "$first" ] || failure="${failure}; contract ${first}"
+          fi
+          if grep -qs 'blocking): FAILED' parts/smoke-*.md 2> /dev/null; then
+            result=red
+            failure="${failure:+${failure}; }compatibility smoke failed"
+          fi
+          failure=$(printf '%s' "$failure" | tr -d '\n' | cut -c1-900)
+
+          sha="$SHA"
+          stable=$(cat parts/stable-sha.txt 2> /dev/null || true)
+          if [ -n "$stable" ]; then
+            stable_text="\`${stable:0:7}\`"
+            compare="https://github.com/${UPSTREAM_REPO}/compare/${stable}...${sha}"
+          else
+            stable_text="(no stable yet)"
+            compare="https://github.com/${UPSTREAM_REPO}/commit/${sha}"
+          fi
+          for f in timings contracts size deps; do
+            [ -s "parts/$f.md" ] || echo "*(not produced)*" > "parts/$f.md"
+          done
+          smoke="*(smoke did not run)*"
+          if ls parts/smoke-*.md > /dev/null 2>&1; then smoke=$(cat parts/smoke-*.md); fi
+          upstream_tag=$(cat parts/upstream-tag.txt 2> /dev/null || echo main)
+          node_version=$(jq -r '.nodeVersion // "unknown"' parts/meta.json 2> /dev/null || echo unknown)
+          failure_md=""
+          [ -z "$failure" ] || failure_md="**Failure:** ${failure}"
+          jq -n \
+            --arg shortSha "${sha:0:7}" --arg sha "$sha" \
+            --arg result "$(echo "$result" | tr '[:lower:]' '[:upper:]')" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg runUrl "$run_url" \
+            --arg upstreamTag "${upstream_tag}" --arg compareUrl "$compare" --arg stableSha "$stable_text" \
+            --arg nodeVersion "$node_version" --arg shellRef "${SHELL_REF:-latest-release}" \
+            --arg failure "$failure_md" \
+            --rawfile timings parts/timings.md --rawfile contracts parts/contracts.md \
+            --rawfile size parts/size.md --rawfile deps parts/deps.md \
+            --arg smoke "$smoke" \
+            '$ARGS.named' > vars.json
+          node ci/canary.mjs render-template --template gate-report.template.md --vars vars.json > gate-report.md
+          cat gate-report.md >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "result=${result}"
+            echo "report_url=${run_url}"
+            echo "failure=${failure}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload gate-report.md
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: |
+            gate-report.md
+            parts/contracts.json
+          if-no-files-found: warn

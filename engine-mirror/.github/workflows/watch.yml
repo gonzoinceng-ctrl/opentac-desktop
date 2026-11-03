@@ -1,0 +1,165 @@
+name: watch
+
+# Hourly. Mirrors upstream main into the `upstream-main` ref and new upstream
+# tags by name. Silent on success: it only speaks (an issue, and a red run) when
+# upstream deleted or moved a tag, or rewrote history. See README.md.
+#
+# Runs on the default branch (opentac-ci). Engine refs are pushed with
+# ENGINE_PUSH_TOKEN, not GITHUB_TOKEN, because upstream edits
+# .github/workflows/* and GITHUB_TOKEN cannot push workflow-file changes.
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: engine-refs
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require ENGINE_PUSH_TOKEN
+        run: |
+          if [ -z "$ENGINE_PUSH_TOKEN" ]; then
+            echo "::error title=Missing secret::ENGINE_PUSH_TOKEN is not set (see README.md, Secrets)."
+            exit 1
+          fi
+
+      - name: Check out the CI branch
+        uses: actions/checkout@v4
+        with:
+          path: ci
+          fetch-depth: 1
+          token: ${{ secrets.ENGINE_PUSH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch mirror refs and upstream main
+        run: |
+          source ci/lib.sh
+          engine_init engine
+          cd engine
+          engine_fetch
+          if ! git rev-parse --verify --quiet 'refs/remotes/origin/upstream-main^{commit}' > /dev/null; then
+            echo "::error title=Not bootstrapped::the mirror has no upstream-main ref. Run bootstrap.sh."
+            exit 1
+          fi
+          upstream_fetch
+
+      # (a) Tag drift: a recorded upstream tag was deleted or moved.
+      - name: Check upstream tags against the manifest
+        run: |
+          source ci/lib.sh
+          git ls-remote --tags --quiet "$UPSTREAM_URL" > lsremote.txt
+          rc=0
+          node ci/manifest.mjs check "$UPSTREAM_URL" --manifest ci/manifest/tags.json \
+            --ls-remote-file lsremote.txt --json > drift.json || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            {
+              echo "Upstream tags no longer match \`manifest/tags.json\`. **Nothing was moved or pushed.**"
+              echo
+              jq -r '.deleted[]? | "- DELETED upstream: `\(.)`"' drift.json
+              jq -r '.changed[]? | "- CHANGED upstream: `\(.tag)` \(.field) `\(.was)` -> `\(.now)`"' drift.json
+              echo
+              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "Decide whether this is benign. The watcher stays red until the manifest is fixed by hand on the default branch."
+            } > drift-body.md
+            issue_upsert tag-drift "Upstream tag drift detected" drift-body.md
+            echo "::error title=Tag drift::upstream deleted or moved a recorded tag"
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          echo "new tags: $(jq -r '.added | join(" ")' drift.json)"
+
+      # (b) History rewrite: upstream main must descend from our upstream-main.
+      - name: Check upstream main still descends from upstream-main
+        working-directory: engine
+        run: |
+          source ../ci/lib.sh
+          old=$(git rev-parse refs/remotes/origin/upstream-main)
+          new=$(git rev-parse refs/remotes/upstream/main)
+          if ! git merge-base --is-ancestor "$old" "$new"; then
+            {
+              echo "Upstream \`main\` is no longer a descendant of the mirror's \`upstream-main\`. **Nothing was moved.**"
+              echo
+              echo "- mirror upstream-main: \`${old}\`"
+              echo "- upstream main now:    \`${new}\`"
+              echo
+              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "Upstream rewrote history (force-push or rebase). Investigate before touching refs; \`stable\` is unaffected."
+            } > ../rewrite-body.md
+            issue_upsert history-rewrite "Upstream history rewrite detected" ../rewrite-body.md
+            echo "::error title=History rewrite::upstream main is not a descendant of upstream-main"
+            exit 1
+          fi
+
+      # (c) Fast-forward upstream-main, then push NEW tags by name. Never --force, never --tags.
+      - name: Fast-forward upstream-main and push new tags
+        working-directory: engine
+        run: |
+          source ../ci/lib.sh
+          old=$(git rev-parse refs/remotes/origin/upstream-main)
+          new=$(git rev-parse refs/remotes/upstream/main)
+          if [ "$old" != "$new" ]; then
+            echo "upstream-main: ${old:0:7} -> ${new:0:7}"
+            git push origin "refs/remotes/upstream/main:refs/heads/upstream-main"
+          fi
+          mapfile -t added < <(jq -r '.added[]?' ../drift.json)
+          for tag in "${added[@]}"; do
+            if ! [[ "$tag" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error title=Odd tag name::refusing to handle upstream tag with unexpected characters"
+              exit 1
+            fi
+            expected=$(awk -v t="refs/tags/${tag}" '$2 == t { print $1 }' ../lsremote.txt)
+            git fetch --no-tags --quiet "$UPSTREAM_URL" "+refs/tags/${tag}:refs/tags/${tag}"
+            got=$(git rev-parse "refs/tags/${tag}")
+            if [ "$got" != "$expected" ]; then
+              echo "::error title=Tag moved mid-run::${tag} changed between ls-remote and fetch; the next run will report it"
+              exit 1
+            fi
+            existing=$(git ls-remote origin "refs/tags/${tag}" | cut -f1)
+            if [ -z "$existing" ]; then
+              echo "pushing new tag ${tag}"
+              git push origin "refs/tags/${tag}:refs/tags/${tag}"
+            elif [ "$existing" != "$got" ]; then
+              # shellcheck disable=SC2016
+              printf 'The mirror already has tag `%s` at `%s`, upstream has it at `%s`. Nothing was changed.\n' "$tag" "$existing" "$got" > ../exists-body.md
+              issue_upsert tag-drift "Upstream tag drift detected" ../exists-body.md
+              echo "::error title=Tag conflict::mirror tag ${tag} differs from upstream"
+              exit 1
+            fi
+          done
+
+      # (d) Record new tags in the manifest on the default branch.
+      - name: Update the tag manifest
+        run: |
+          source ci/lib.sh
+          git -C ci config user.name "opentac-engine-bot"
+          git -C ci config user.email "opentac-engine-bot@users.noreply.github.com"
+          node ci/manifest.mjs update "$UPSTREAM_URL" --manifest ci/manifest/tags.json \
+            --ls-remote-file lsremote.txt > /dev/null
+          if ! git -C ci diff --quiet -- manifest/tags.json; then
+            git -C ci add manifest/tags.json
+            git -C ci commit --quiet -m "manifest: record new upstream tags ($(jq -r '.added | join(", ")' drift.json))"
+            push_default_branch ci "$DEFAULT_BRANCH"
+          fi
+      # (e) Silent on success: no comments, no summary.

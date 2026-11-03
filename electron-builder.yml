@@ -9,6 +9,18 @@ files:
   - dist/**
   - package.json
   - "!**/*.map"
+  # Git Credential Manager (.NET) inside dugite's git tree is never invoked (no credential helpers configured); ~70 MB per arch.
+  - "!node_modules/dugite/git/libexec/git-core/git-credential-manager*"
+  - "!node_modules/dugite/git/libexec/git-core/*.dll"
+  - "!node_modules/dugite/git/libexec/git-core/*.json"
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  resetAdHocDarwinSignature: true
 asarUnpack:
   # dugite's git binaries cannot execute from inside the asar.
   - node_modules/dugite/git/**
@@ -16,7 +28,10 @@ extraResources:
   # Bundled Node 24 per arch (fetched by scripts/fetch-node.mjs into vendor/).
   - from: vendor/node/darwin-${arch}
     to: node
-    filter: ["bin/node", "lib/node_modules/npm/**"]
+    # No node_modules-containing pattern here: electron-builder auto-adds '!**/node_modules/**' to any
+    # filter mentioning node_modules, which silently dropped npm (Phase 0 validation). fetch-node.mjs already
+    # prunes the tree to bin/, lib/node_modules/npm and LICENSE.
+    filter: ["bin/**", "lib/**", "LICENSE"]
   - from: resources/launcher
     to: launcher
 mac:
@@ -31,11 +46,11 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  notarize: true          # uses APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER from env
+  notarize: true          # APPLE_API_KEY must be a PATH to the .p8 file (+ APPLE_API_KEY_ID, APPLE_API_ISSUER); CI verifies with stapler/spctl because a missing credential only warns
   extendInfo:
     NSMicrophoneUsageDescription: "OpenTac uses the microphone for hands-free voice control."
-    LSMinimumSystemVersion: "12.0"
-  minimumSystemVersion: "12.0"
+    LSMinimumSystemVersion: "13.5"
+  minimumSystemVersion: "13.5"   # Electron 45 needs macOS 13; the official Node 24 binaries need 13.5
 dmg:
   sign: false
   contents:
@@ -43,6 +58,6 @@ dmg:
     - { x: 410, y: 220, type: link, path: /Applications }
 publish:
   provider: github
-  owner: OWNER            # ← wrapper repo owner
-  repo: opentac       # ← wrapper repo name
+  owner: gonzoinceng-ctrl
+  repo: opentac-desktop   # the existing gonzoinceng-ctrl/opentac is an unrelated project (docs/DECISIONS.md)
   releaseType: draft

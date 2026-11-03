@@ -12,3 +12,11 @@ opentac-brief.zip
 test-results/
 playwright-report/
 .opentac-dev-data/
+# secrets and signing material must never be committed (public repo)
+.env
+.env.*
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+AuthKey_*.p8

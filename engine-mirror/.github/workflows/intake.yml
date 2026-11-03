@@ -1,0 +1,375 @@
+name: intake
+
+# Weekly (Sunday 02:17 UTC) and on demand. Picks ONE candidate commit, runs the
+# gate on that exact SHA, and only on green moves `candidate`, opens the canary
+# issue and records the verdict as a git note. On red it opens/updates a
+# `gate-failed` issue and `candidate` does NOT move. See README.md.
+#
+# Policy (DECISIONS correction 4):
+#   main : tip of `upstream-main`                              (default)
+#   tags : newest upstream v<semver> tag that is not an ancestor of `stable`;
+#          if there is none this is a NO-OP that says so, never a fallback to main.
+# An explicit `ref` (hotfix) overrides the policy. A candidate must always be a
+# commit that exists in upstream main's history (the "zero engine commits" rule).
+
+on:
+  schedule:
+    - cron: '17 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Optional explicit upstream tag or commit (hotfix). Must already be mirrored: run watch first."
+        required: false
+        type: string
+      policy:
+        description: "Candidate policy when no ref is given (repo variable INTAKE_POLICY is used for scheduled runs)"
+        required: false
+        type: choice
+        options:
+          - main
+          - tags
+        default: main
+      force:
+        description: "Allow a candidate that is not a descendant of stable, and a non-fast-forward move of candidate"
+        required: false
+        type: boolean
+        default: false
+      min_shell:
+        description: "minShell to record (X.Y.Z). Default: carried over from the latest stable-* tag, else repo variable MIN_SHELL, else 0.0.0"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: engine-refs
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      sha: ${{ steps.choose.outputs.sha }}
+      upstream_tag: ${{ steps.choose.outputs.upstream_tag }}
+      policy: ${{ steps.choose.outputs.policy }}
+      noop: ${{ steps.choose.outputs.noop }}
+      stable_sha: ${{ steps.choose.outputs.stable_sha }}
+      candidate_sha: ${{ steps.choose.outputs.candidate_sha }}
+    steps:
+      - name: Require ENGINE_PUSH_TOKEN
+        run: |
+          if [ -z "$ENGINE_PUSH_TOKEN" ]; then
+            echo "::error title=Missing secret::ENGINE_PUSH_TOKEN is not set (see README.md, Secrets)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          fetch-depth: 1
+          token: ${{ secrets.ENGINE_PUSH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch mirror refs
+        run: |
+          source ci/lib.sh
+          engine_init engine
+          cd engine
+          engine_fetch
+
+      - name: Choose the candidate SHA
+        id: choose
+        working-directory: engine
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_POLICY: ${{ inputs.policy }}
+          INPUT_FORCE: ${{ inputs.force }}
+          VAR_POLICY: ${{ vars.INTAKE_POLICY }}
+        run: |
+          source ../ci/lib.sh
+          policy="${INPUT_POLICY:-${VAR_POLICY:-main}}"
+          case "$policy" in main | tags) ;; *)
+            echo "::error title=Bad policy::policy must be main or tags"
+            exit 1
+            ;;
+          esac
+          stable=$(git rev-parse --verify --quiet 'refs/remotes/origin/stable^{commit}' || true)
+          candidate=$(git rev-parse --verify --quiet 'refs/remotes/origin/candidate^{commit}' || true)
+          if ! upstream_main=$(git rev-parse --verify --quiet 'refs/remotes/origin/upstream-main^{commit}'); then
+            echo "::error title=Not bootstrapped::the mirror has no upstream-main ref. Run bootstrap.sh."
+            exit 1
+          fi
+
+          sha=""
+          noop=false
+          reason=""
+          if [ -n "$INPUT_REF" ]; then
+            if ! [[ "$INPUT_REF" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || [[ "$INPUT_REF" == -* ]]; then
+              echo "::error title=Bad ref::unexpected characters in ref"
+              exit 1
+            fi
+            policy=ref
+            sha=$(git rev-parse --verify --quiet --end-of-options "refs/tags/${INPUT_REF}^{commit}" \
+              || git rev-parse --verify --quiet --end-of-options "${INPUT_REF}^{commit}" || true)
+            if [ -z "$sha" ]; then
+              echo "::error title=Unknown ref::'${INPUT_REF}' is not a mirrored tag or commit. Run the watch workflow first so the mirror has it."
+              exit 1
+            fi
+          elif [ "$policy" = main ]; then
+            sha=$upstream_main
+          else
+            git tag --list 'v*' > ../tags.txt
+            : > ../exclude.txt
+            if [ -n "$stable" ]; then
+              while read -r t; do
+                if git merge-base --is-ancestor "${t}^{commit}" "$stable"; then echo "$t" >> ../exclude.txt; fi
+              done < ../tags.txt
+            fi
+            if tag=$(node ../ci/canary.mjs newest-tag --file ../tags.txt --exclude-file ../exclude.txt); then
+              sha=$(git rev-parse --verify "refs/tags/${tag}^{commit}")
+            else
+              noop=true
+              reason="policy tags: no upstream v* tag newer than stable"
+            fi
+          fi
+
+          if [ "$noop" = false ]; then
+            # Invariant: the candidate must be a commit of upstream main's history.
+            if ! git merge-base --is-ancestor "$sha" "$upstream_main"; then
+              echo "::error title=Not an upstream commit::${sha} is not in the history of upstream-main; refusing (zero engine commits rule)"
+              exit 1
+            fi
+            if [ "$sha" = "$stable" ]; then
+              noop=true
+              reason="${sha:0:7} is already stable"
+            elif [ "$sha" = "$candidate" ]; then
+              noop=true
+              reason="${sha:0:7} is already the candidate"
+            elif [ -n "$stable" ] && [ "$INPUT_FORCE" != true ] && ! git merge-base --is-ancestor "$stable" "$sha"; then
+              echo "::error title=Not a descendant of stable::${sha} does not descend from stable ${stable:0:7}. Re-run with force to override."
+              exit 1
+            fi
+          fi
+
+          upstream_tag=main
+          [ -z "$sha" ] || upstream_tag=$(upstream_tag_for "$sha")
+          {
+            echo "sha=${sha}"
+            echo "upstream_tag=${upstream_tag}"
+            echo "policy=${policy}"
+            echo "noop=${noop}"
+            echo "stable_sha=${stable}"
+            echo "candidate_sha=${candidate}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$noop" = true ]; then
+            echo "no-op: ${reason}"
+            # shellcheck disable=SC2016
+            printf '%s intake (%s): no-op, %s. stable `%s`, candidate `%s`.\n' \
+              "$(date -u +%F)" "$policy" "$reason" "${stable:0:7}" "${candidate:0:7}" > ../digest.md
+            issue_upsert digest "OpenTac engine weekly digest" ../digest.md > /dev/null
+          else
+            echo "candidate: ${sha} (${upstream_tag}, policy ${policy})"
+          fi
+
+  gate:
+    needs: pick
+    if: ${{ needs.pick.outputs.noop == 'false' }}
+    uses: ./.github/workflows/gate.yml
+    with:
+      sha: ${{ needs.pick.outputs.sha }}
+    secrets: inherit
+
+  finish:
+    needs: [pick, gate]
+    if: ${{ !cancelled() && needs.pick.outputs.noop == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHA: ${{ needs.pick.outputs.sha }}
+      UPSTREAM_TAG: ${{ needs.pick.outputs.upstream_tag }}
+      POLICY: ${{ needs.pick.outputs.policy }}
+      STABLE_SHA: ${{ needs.pick.outputs.stable_sha }}
+      CANDIDATE_SHA: ${{ needs.pick.outputs.candidate_sha }}
+      GATE_JOB: ${{ needs.gate.result }}
+      GATE_RESULT: ${{ needs.gate.outputs.result }}
+      GATE_FAILURE: ${{ needs.gate.outputs.failure }}
+      GATE_RUN_URL: ${{ needs.gate.outputs.report_url }}
+      FORCE: ${{ inputs.force }}
+      INPUT_MIN_SHELL: ${{ inputs.min_shell }}
+      VAR_MIN_SHELL: ${{ vars.MIN_SHELL }}
+    steps:
+      - name: Require ENGINE_PUSH_TOKEN
+        run: |
+          if [ -z "$ENGINE_PUSH_TOKEN" ]; then
+            echo "::error title=Missing secret::ENGINE_PUSH_TOKEN is not set (see README.md, Secrets)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          fetch-depth: 1
+          token: ${{ secrets.ENGINE_PUSH_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch mirror refs
+        run: |
+          source ci/lib.sh
+          engine_init engine
+          cd engine
+          engine_fetch
+
+      - name: Download the gate report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-report
+          path: report
+
+      - name: Record the verdict
+        run: |
+          source ci/lib.sh
+          [ -f report/gate-report.md ] || echo "(the gate produced no report; see the run)" > report/gate-report.md
+          head -c 40000 report/gate-report.md > report/gate-report-trunc.md
+
+          gate_run_url="${GATE_RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+          short=$(short_sha "$SHA")
+          title_tag=$UPSTREAM_TAG
+          today=$(date -u +%F)
+          if [ -n "$STABLE_SHA" ]; then
+            range="${STABLE_SHA}..${SHA}"
+            compare="https://github.com/bilawalsidhu/gods-eye-view/compare/${STABLE_SHA}...${SHA}"
+          else
+            range="${SHA}"
+            compare="https://github.com/bilawalsidhu/gods-eye-view/commit/${SHA}"
+          fi
+          cd engine
+          if [ -n "$STABLE_SHA" ]; then
+            ncommits=$(git rev-list --count "$STABLE_SHA..$SHA")
+            new_tags=$(git tag --list 'v*' --no-merged "$STABLE_SHA" | tr '\n' ' ')
+          else
+            ncommits=$(git rev-list --count "$SHA")
+            new_tags=$(git tag --list 'v*' | tr '\n' ' ')
+          fi
+          cd ..
+
+          # ---------------------------------------------------------------- red
+          if [ "$GATE_JOB" != success ] || [ "$GATE_RESULT" != green ]; then
+            failure="${GATE_FAILURE:-gate workflow did not complete (job result: ${GATE_JOB})}"
+            {
+              echo "The gate is **red** for \`${SHA}\` (${title_tag}, policy ${POLICY}). \`candidate\` did not move."
+              echo
+              echo "- Failure: ${failure}"
+              echo "- Gate run and report: ${gate_run_url}"
+              echo "- Upstream compare: ${compare}"
+              echo
+              echo "<details><summary>Gate report</summary>"
+              echo
+              cat report/gate-report-trunc.md
+              echo
+              echo "</details>"
+            } > failed-body.md
+            n=$(issue_upsert gate-failed "Gate failed: ${short} (${title_tag})" failed-body.md)
+            # shellcheck disable=SC2016
+            printf '%s intake (%s): **gate failed** for `%s` (%s), %s commits since stable. See #%s. Candidate unchanged.\n' \
+              "$today" "$POLICY" "$short" "$title_tag" "$ncommits" "$n" > digest.md
+            issue_upsert digest "OpenTac engine weekly digest" digest.md > /dev/null
+            echo "::error title=Gate failed::${failure}"
+            exit 1
+          fi
+
+          # -------------------------------------------------------------- green
+          cd engine
+          if [ -n "$STABLE_SHA" ] && [ "$FORCE" != true ] && ! git merge-base --is-ancestor "$STABLE_SHA" "$SHA"; then
+            echo "::error title=Not a descendant of stable::stable moved while the gate ran; refusing to move candidate"
+            exit 1
+          fi
+
+          # minShell: explicit input > carried over from the newest stable-* tag > repo variable > 0.0.0
+          min_shell=${INPUT_MIN_SHELL:-}
+          if [ -z "$min_shell" ]; then
+            last=$(git for-each-ref --sort=-creatordate --count=1 --format='%(refname:short)' 'refs/tags/stable-*')
+            if [ -n "$last" ]; then
+              min_shell=$(git tag --list --format='%(contents)' "$last" | sed -n 's/^minShell: //p' | head -n 1)
+            fi
+          fi
+          min_shell=${min_shell:-${VAR_MIN_SHELL:-0.0.0}}
+          if ! [[ "$min_shell" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Bad minShell::'${min_shell}' is not X.Y.Z"
+            exit 1
+          fi
+
+          # Move candidate: fast-forward or first set. Forced only on explicit request.
+          if [ -n "$CANDIDATE_SHA" ] && ! git merge-base --is-ancestor "$CANDIDATE_SHA" "$SHA"; then
+            if [ "$FORCE" = true ]; then
+              git push --force-with-lease="refs/heads/candidate:${CANDIDATE_SHA}" origin "${SHA}:refs/heads/candidate"
+            else
+              echo "::error title=Not a fast-forward::candidate ${CANDIDATE_SHA:0:7} is not an ancestor of ${short}. Re-run with force."
+              exit 1
+            fi
+          else
+            git push origin "${SHA}:refs/heads/candidate"
+          fi
+          cd ..
+
+          ready_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          jq -n --arg sha "$SHA" --arg upstreamTag "$UPSTREAM_TAG" --arg readyAt "$ready_at" \
+            --arg gateRunUrl "$gate_run_url" --arg policy "$POLICY" --arg commitRange "$range" \
+            --arg minShell "$min_shell" \
+            '{sha: $sha, upstreamTag: $upstreamTag, readyAt: $readyAt, gateRunUrl: $gateRunUrl, policy: $policy, commitRange: $commitRange, minShell: $minShell, gateResult: "green"}' \
+            > canary.json
+
+          # Git note with the same JSON, so promote can re-read the verdict for this exact SHA.
+          (
+            cd engine
+            git notes --ref=refs/notes/gate add -f -F ../canary.json "$SHA"
+            git push origin refs/notes/gate:refs/notes/gate
+          )
+
+          node ci/canary.mjs emit-body --data canary.json --report report/gate-report-trunc.md > canary-body.md
+          ensure_labels
+          url=$(gh issue create --title "Canary: ${short} (${title_tag})" --label canary --body-file canary-body.md)
+          new_n=$(printf '%s' "$url" | grep -Eo '[0-9]+$')
+          promote_after=$(node ci/canary.mjs promote-after --ready-at "$ready_at")
+
+          # Supersede older canaries and clear any open gate-failed issue (this candidate is green).
+          for n in $(gh issue list --state open --label canary --json number --jq '.[].number'); do
+            if [ "$n" != "$new_n" ]; then
+              gh issue edit "$n" --add-label superseded > /dev/null
+              gh issue comment "$n" --body "Superseded by #${new_n} (\`${short}\`). The canary clock restarts." > /dev/null
+              gh issue close "$n" --reason "not planned" > /dev/null
+            fi
+          done
+          for n in $(gh issue list --state open --label gate-failed --json number --jq '.[].number'); do
+            gh issue comment "$n" --body "Resolved: \`${short}\` passed the gate (#${new_n})." > /dev/null
+            gh issue close "$n" --reason completed > /dev/null
+          done
+
+          {
+            # shellcheck disable=SC2016
+            printf '%s intake (%s): candidate `%s` (%s) **passed the gate**. Canary #%s started.\n\n' "$today" "$POLICY" "$short" "$title_tag" "$new_n"
+            # shellcheck disable=SC2016
+            printf -- '- %s commit(s) since stable (`%s`)\n' "$ncommits" "$range"
+            printf -- '- New upstream tags since stable: %s\n' "${new_tags:-none}"
+            # shellcheck disable=SC2016
+            printf -- '- Auto-promotes after %s unless the canary issue has `hold` or `reject`\n' "$promote_after"
+            printf -- '- Gate run: %s\n' "$gate_run_url"
+          } > digest.md
+          issue_upsert digest "OpenTac engine weekly digest" digest.md > /dev/null
+          echo "canary #${new_n} opened for ${short}"
