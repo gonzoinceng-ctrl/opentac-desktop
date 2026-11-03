@@ -1,0 +1,37 @@
+---
+title: Credits
+description: Credits for OpenTac: God's Eye View by Bilawal Sidhu first, then Electron, Node.js, Chromium, Cesium, OpenStreetMap, Esri and the data providers.
+path: /credits/
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap prose">
+    <h1>Credits</h1>
+
+    <h2>God's Eye View, by Bilawal Sidhu</h2>
+    <p>Everything you see on the globe is his work: the real-time globe, the layers, the voice control, the cockpit view. OpenTac is only the wrapper that packages it for the Mac.</p>
+    <ul>
+      <li><a href="{{links.upstream}}" rel="noopener">God's Eye View on GitHub</a> (MIT)</li>
+      <li><a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu on YouTube</a></li>
+    </ul>
+    <p>OpenTac is unofficial and is not endorsed by, affiliated with, or supported by him.</p>
+
+    <h2>Software OpenTac is built on</h2>
+    <ul>
+      <li><a href="https://www.electronjs.org/" rel="noopener">Electron</a>, which brings <a href="https://www.chromium.org/" rel="noopener">Chromium</a></li>
+      <li><a href="https://nodejs.org/" rel="noopener">Node.js</a>, bundled as the engine's runtime</li>
+      <li><a href="https://github.com/git/git" rel="noopener">git</a>, by way of <a href="https://github.com/desktop/dugite" rel="noopener">dugite</a></li>
+      <li><a href="https://cesium.com/platform/cesiumjs/" rel="noopener">CesiumJS</a>, the 3D globe engine used by God's Eye View</li>
+    </ul>
+
+    <h2>Maps and data</h2>
+    <ul>
+      <li><a href="https://www.openstreetmap.org/copyright" rel="noopener">OpenStreetMap</a> contributors (ODbL), a fallback map and the source of several mapped layers.</li>
+      <li><a href="https://www.esri.com/" rel="noopener">Esri</a> World Imagery, the default satellite imagery.</li>
+      <li>Google, Cesium ion, OpenSky, adsb.lol, AISStream, CelesTrak, USGS, NASA FIRMS, TomTom, Mapillary, TeleGeography and the others that supply live and bundled data. God's Eye View keeps the authoritative list with each source's license and attribution: <a href="{{links.upstreamData}}" rel="noopener">DATA_SOURCES.md</a>.</li>
+    </ul>
+    <p>Third-party data is not covered by the MIT license; see <a href="/licenses/">Licenses</a>.</p>
+  </div>
+</main>
+{{> footer}}

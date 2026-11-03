@@ -1,0 +1,71 @@
+---
+title: Download
+description: Download OpenTac for macOS (Apple Silicon or Intel), with SHA-256 checksums and instructions to verify the signature.
+path: /download/
+current: download
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap">
+    <h1>Download OpenTac</h1>
+    <p class="lead">OpenTac for macOS 13.5 or later. It is an unofficial app for <a href="{{links.upstream}}" rel="noopener">God's Eye View</a> by Bilawal Sidhu.</p>
+
+    {{#if release.available}}
+    <p>Latest version: <strong>{{release.latest.version}}</strong>{{#if release.latest.prerelease}} <span class="badge badge-pre">pre-release</span>{{/if}}, published <time datetime="{{release.latest.iso}}">{{release.latest.date}}</time>. <a href="{{release.latest.url}}" rel="noopener">Release notes on GitHub</a>.</p>
+
+    <div class="dl-grid">
+      {{#each release.arches}}
+      <div class="dl-card">
+        <h3>{{label}} <span class="muted small">({{hint}})</span></h3>
+        {{#if dmg}}
+        <a class="btn btn-primary" href="{{dmg.url}}">Download .dmg<small>{{dmg.name}} &middot; {{dmg.size}}</small></a>
+        {{/if}}
+        <dl>
+          {{#if dmg}}
+          <dt>Disk image (.dmg)</dt>
+          <dd class="mono">{{#if dmg.sha256}}SHA-256 {{dmg.sha256}}{{else}}No checksum published{{/if}}</dd>
+          {{/if}}
+          {{#if zip}}
+          <dt>Zip (.zip)</dt>
+          <dd><a href="{{zip.url}}">{{zip.name}}</a> &middot; {{zip.size}}</dd>
+          <dd class="mono">{{#if zip.sha256}}SHA-256 {{zip.sha256}}{{else}}No checksum published{{/if}}</dd>
+          {{/if}}
+        </dl>
+      </div>
+      {{/each}}
+    </div>
+    <p class="muted small">Not sure which one you have? Apple menu &rarr; About This Mac. "Chip: Apple M1" (or later) means Apple Silicon; "Processor: Intel" means Intel.</p>
+
+    <h2 id="verify">Verify what you downloaded</h2>
+    <div class="prose">
+      <p>Compare the checksum with the table above{{#if release.hasSums}} (it comes from the <code>SHA256SUMS.txt</code> file published with the release){{/if}}:</p>
+      {{#each release.arches}}{{#if dmg}}<pre><code>shasum -a 256 ~/Downloads/{{dmg.name}}</code></pre>{{/if}}{{/each}}
+      <p>Open the disk image, drag OpenTac to Applications, then check the signature and Apple's notarization:</p>
+      <pre><code>codesign --verify --deep --strict --verbose=2 /Applications/OpenTac.app
+spctl -a -vv /Applications/OpenTac.app
+xcrun stapler validate /Applications/OpenTac.app</code></pre>
+      <p>A good result says <code>accepted</code> and <code>source=Notarized Developer ID</code>. If any of these fails, do not run the app; download it again, and if it still fails, <a href="{{links.appIssues}}" rel="noopener">tell us</a>.</p>
+    </div>
+    {{else}}
+    <div class="soon">
+      <h2>First release coming soon</h2>
+      <p>OpenTac has not published its first build yet, so there is nothing to download. Until then you can build it from source.</p>
+      <a class="btn btn-primary" href="{{links.app}}" rel="noopener">Build from source on GitHub</a>
+    </div>
+
+    <h2 id="verify">Verifying downloads</h2>
+    <div class="prose">
+      <p>When the first release is out, this page lists a SHA-256 checksum for every file. Compare it with <code>shasum -a 256 &lt;file&gt;</code>, then check the app after installing:</p>
+      <pre><code>codesign --verify --deep --strict --verbose=2 /Applications/OpenTac.app
+spctl -a -vv /Applications/OpenTac.app
+xcrun stapler validate /Applications/OpenTac.app</code></pre>
+      <p>A good result says <code>accepted</code> and <code>source=Notarized Developer ID</code>.</p>
+    </div>
+    {{/if}}
+
+    <h2>Older releases</h2>
+    <p>Every release, including older versions, is on <a href="{{links.appReleases}}" rel="noopener">GitHub Releases</a>. OpenTac also updates itself: the app checks for new versions and the engine checks for new God's Eye View code, and both ask before changing anything. See the <a href="/changelog/">changelog</a>.</p>
+  </div>
+</main>
+{{> footer}}

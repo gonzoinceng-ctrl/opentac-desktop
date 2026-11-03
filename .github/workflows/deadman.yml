@@ -1,0 +1,108 @@
+# Dead-man switch for the engine mirror (gonzoinceng-ctrl/opentac-engine): if its `upstream-main` ref falls more than
+# 48 h behind upstream's main, or its watch.yml workflow is disabled, open/update an issue labelled `mirror-stale`.
+# GitHub disables scheduled workflows after 60 days of repo inactivity; this is how a silent mirror gets noticed.
+name: Mirror dead-man check
+
+on:
+  schedule:
+    - cron: "53 */12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: deadman
+  cancel-in-progress: false
+
+env:
+  MIRROR: gonzoinceng-ctrl/opentac-engine
+  UPSTREAM: bilawalsidhu/gods-eye-view
+  MAX_LAG_SECONDS: "172800" # 48 h
+
+jobs:
+  check:
+    name: Compare mirror with upstream
+    if: github.repository == 'gonzoinceng-ctrl/opentac-desktop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ENGINE_READ_TOKEN: ${{ secrets.ENGINE_READ_TOKEN }}
+    steps:
+      - name: Collect problems
+        id: problems
+        run: |
+          set -uo pipefail
+          report="$RUNNER_TEMP/problems.md"
+          : > "$report"
+          problem() { printf -- '- %s\n' "$1" >> "$report"; echo "::warning::$1"; }
+
+          mirror_sha="$(git ls-remote "https://github.com/${MIRROR}" refs/heads/upstream-main | cut -f1)"
+          upstream_sha="$(git ls-remote "https://github.com/${UPSTREAM}" refs/heads/main | cut -f1)"
+
+          if [ -z "$upstream_sha" ]; then
+            # Not the mirror's fault; do not open an issue about our own network blip.
+            echo "::error::could not read upstream main from https://github.com/${UPSTREAM}"
+            exit 1
+          fi
+
+          if [ -z "$mirror_sha" ]; then
+            problem "Mirror ref \`upstream-main\` not found on ${MIRROR} (mirror missing, private, or the ref was deleted)."
+          elif [ "$mirror_sha" = "$upstream_sha" ]; then
+            echo "Mirror upstream-main == upstream main (${upstream_sha:0:12})"
+          else
+            up_date="$(gh api "repos/${UPSTREAM}/commits/main" --jq '.commit.committer.date' 2>/dev/null || true)"
+            mirror_date="$(gh api "repos/${MIRROR}/commits/${mirror_sha}" --jq '.commit.committer.date' 2>/dev/null || true)"
+            if [ -z "$up_date" ] || [ -z "$mirror_date" ]; then
+              echo "::error::could not read commit dates (upstream='${up_date}', mirror='${mirror_date}')"
+              exit 1
+            fi
+            lag=$(( $(date -u -d "$up_date" +%s) - $(date -u -d "$mirror_date" +%s) ))
+            echo "upstream main ${upstream_sha:0:12} ($up_date) vs mirror upstream-main ${mirror_sha:0:12} ($mirror_date): lag ${lag}s"
+            if [ "$lag" -gt "$MAX_LAG_SECONDS" ]; then
+              problem "Mirror \`upstream-main\` (${mirror_sha:0:12}, committed ${mirror_date}) is $(( lag / 3600 )) h behind upstream \`main\` (${upstream_sha:0:12}, committed ${up_date}). Limit is 48 h."
+            fi
+          fi
+
+          if [ -n "${ENGINE_READ_TOKEN:-}" ]; then
+            state="$(GH_TOKEN="$ENGINE_READ_TOKEN" gh api "repos/${MIRROR}/actions/workflows/watch.yml" --jq '.state' 2>/dev/null || true)"
+            echo "watch.yml state: ${state:-unreadable}"
+            if [ "$state" != "active" ]; then
+              problem "Mirror workflow \`watch.yml\` is not active (state: ${state:-unreadable}). Scheduled workflows are auto-disabled after 60 days without repository activity; re-enable it in the mirror's Actions tab."
+            fi
+          else
+            echo "::notice::ENGINE_READ_TOKEN is not set; skipping the watch.yml state check (add a token with actions:read on ${MIRROR} to enable it)."
+          fi
+
+          if [ -s "$report" ]; then echo "stale=true" >> "$GITHUB_OUTPUT"; else echo "stale=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Open or update the mirror-stale issue
+        if: steps.problems.outputs.stale == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "The engine mirror needs attention (checked $(date -u +%Y-%m-%dT%H:%MZ), [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)):"
+            echo
+            cat "$RUNNER_TEMP/problems.md"
+            echo
+            echo "Until this is fixed OpenTac installs receive no new engine updates (they keep running the last \`stable\`). See docs/RELEASE.md."
+          } > "$RUNNER_TEMP/body.md"
+          gh label create mirror-stale --color D93F0B --description "Engine mirror is stale or its watcher is disabled" 2>/dev/null || true
+          number="$(gh issue list --label mirror-stale --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "Engine mirror is stale or its watcher is disabled" --label mirror-stale --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+      - name: Close the mirror-stale issue once healthy
+        if: steps.problems.outputs.stale == 'false'
+        run: |
+          set -euo pipefail
+          number="$(gh issue list --label mirror-stale --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "Mirror is healthy again as of $(date -u +%Y-%m-%dT%H:%MZ)."
+          fi

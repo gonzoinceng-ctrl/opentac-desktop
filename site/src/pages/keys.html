@@ -1,0 +1,47 @@
+---
+title: API keys
+description: Which optional API keys unlock what in OpenTac and God's Eye View, what they cost, and where they are stored (only on your Mac).
+path: /keys/
+current: keys
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap">
+    <h1>API keys</h1>
+    <p class="lead">None are required. OpenTac opens with satellite imagery, keyless terrain, and live aircraft, satellites, earthquakes, public cameras and launches.</p>
+
+    <div class="callout">
+      <p><strong>Where keys live.</strong> Keys you add in the globe's <em>POWER UP &rarr; Provider Settings</em> panel are saved on your Mac only, in the <code>.env</code> file inside OpenTac's engine folder under <code>~/Library/Application Support</code>. They are sent to the provider they belong to and nowhere else. Nothing goes to OpenTac or this website.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Key</th><th scope="col">What it unlocks</th><th scope="col">Cost</th><th scope="col">Get it</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Cesium ion</th><td>Google Photorealistic 3D, world terrain, extra imagery. Use a public <code>assets:read</code> token.</td><td class="pill-free">Free tier for eligible personal, non-commercial use; quotas apply</td><td><a href="https://cesium.com/ion" rel="noopener">cesium.com/ion</a></td></tr>
+          <tr><th scope="row">Google Maps</th><td>Direct Google Photorealistic 3D, place search, Street View.</td><td class="pill-paid">Metered</td><td><a href="https://console.cloud.google.com/" rel="noopener">Google Cloud Console</a> (restrict the key by URL)</td></tr>
+          <tr><th scope="row">OpenAI</th><td>Voice control and the AI heads-up summary.</td><td class="pill-paid">Metered</td><td><a href="https://platform.openai.com" rel="noopener">platform.openai.com</a></td></tr>
+          <tr><th scope="row">Gemini</th><td>Voice control through Gemini Live, as an alternative to OpenAI.</td><td class="pill-paid">Per Google's current pricing</td><td><a href="https://aistudio.google.com/" rel="noopener">Google AI Studio</a></td></tr>
+          <tr><th scope="row">AISStream</th><td>Live global ships.</td><td class="pill-free">Free signup</td><td><a href="https://aisstream.io" rel="noopener">aisstream.io</a></td></tr>
+          <tr><th scope="row">NASA FIRMS</th><td>Live active fires.</td><td class="pill-free">Free</td><td><a href="https://firms.modaps.eosdis.nasa.gov/api/map_key/" rel="noopener">firms.modaps.eosdis.nasa.gov</a></td></tr>
+          <tr><th scope="row">TomTom</th><td>Live flow speeds and congestion colours for the simulated traffic layer.</td><td class="pill-free">Free tier available</td><td><a href="https://my.tomtom.com/keys" rel="noopener">my.tomtom.com</a></td></tr>
+          <tr><th scope="row">Mapillary</th><td>Street-level coverage and photos (a public client token).</td><td class="pill-free">Free</td><td><a href="https://www.mapillary.com/dashboard/developers" rel="noopener">mapillary.com</a></td></tr>
+          <tr><th scope="row">OpenSky</th><td>More flight-polling credits. Anonymous access works without a key.</td><td class="pill-free">Free</td><td><a href="https://opensky-network.org" rel="noopener">opensky-network.org</a></td></tr>
+          <tr><th scope="row">Launch Library 2</th><td>Higher limits for rocket launches. Public access needs no key.</td><td class="pill-paid">Optional paid token</td><td><a href="https://thespacedevs.com/supportus" rel="noopener">thespacedevs.com</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <p>Prices, quotas and eligibility are set by each provider and change; check their pages before you sign up. The full, current explanation is in the upstream README section <a href="{{links.upstreamKeys}}" rel="noopener">Keys &amp; Costs</a>.</p>
+      <h2>Good to know</h2>
+      <ul>
+        <li>After you save a key, the globe reloads. That is normal.</li>
+        <li>If you switch AI summaries to Ollama, OpenRouter or xAI, the engine's OpenAI key row is locked while that is on. Add your voice key first, or switch back. See <a href="/ai/">AI options</a>.</li>
+        <li>Keys for the optional OpenRouter and xAI summary providers are OpenTac's, not the engine's: they are encrypted on your Mac and never written to the engine's <code>.env</code>.</li>
+      </ul>
+    </div>
+  </div>
+</main>
+{{> footer}}

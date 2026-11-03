@@ -8,7 +8,7 @@ export type Channel = 'stable' | 'candidate' | 'upstream';
 export type AiProvider = 'openai' | 'ollama' | 'openrouter' | 'xai';
 
 /** Placeholder engine mirror URL; replaced at Phase 5b. */
-export const DEFAULT_REMOTE_URL = 'https://github.com/OWNER/opentac-engine.git';
+export const DEFAULT_REMOTE_URL = 'https://github.com/gonzoinceng-ctrl/opentac-engine.git';
 
 /** Saved window geometry; x/y are absent when the position was never set. */
 export interface WindowBounds {

@@ -1,0 +1,33 @@
+---
+title: Licenses
+description: The full God's Eye View MIT license text and third-party data notice, plus OpenTac's own third-party notices.
+path: /licenses/
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap">
+    <h1>Licenses</h1>
+    <div class="prose">
+      <p>OpenTac runs <a href="{{links.upstream}}" rel="noopener">God's Eye View</a> by Bilawal Sidhu. Its license is reproduced in full and unmodified below, including the note that the MIT grant covers source code only and not third-party data.</p>
+      <p>OpenTac is currently distributed as a non-commercial project, because some data that ships with God's Eye View is licensed for non-commercial use only.</p>
+    </div>
+
+    <h2 id="gods-eye-view">God's Eye View</h2>
+    <pre class="license" tabindex="0">{{{license_text}}}</pre>
+
+    <div class="prose">
+      <h2 id="shell">OpenTac and the software it bundles</h2>
+      <p>OpenTac's own code is MIT-licensed. The app bundles or depends on:</p>
+      <ul>
+        <li><strong>Electron</strong> (MIT) and <strong>Chromium</strong> (BSD and other open-source licenses).</li>
+        <li><strong>Node.js</strong> (MIT and others). The license file ships inside the app at <code>Resources/node/LICENSE</code>.</li>
+        <li><strong>git</strong>, through <strong>dugite</strong> (GNU GPL v2). Shipped as a separate executable and never linked into OpenTac; the source is at <a href="https://github.com/git/git" rel="noopener">github.com/git/git</a>.</li>
+        <li><strong>electron-updater</strong>, <strong>electron-log</strong>, <strong>tree-kill</strong> (MIT) and <strong>semver</strong> (ISC).</li>
+      </ul>
+      <p>The complete list, with every license text, is in <a href="{{links.appNotices}}" rel="noopener">THIRD_PARTY_NOTICES.md</a> in the OpenTac repository. The same notices are available from the app's About panel.</p>
+      <p>OpenTac's icon and this website's artwork are original and are not derived from God's Eye View's logo. Credits for the data and map providers are on the <a href="/credits/">credits page</a>.</p>
+    </div>
+  </div>
+</main>
+{{> footer}}

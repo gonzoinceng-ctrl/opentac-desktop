@@ -1,0 +1,35 @@
+---
+title: Changelog
+description: OpenTac release notes, generated from GitHub Releases, and the current stable engine.
+path: /changelog/
+current: changelog
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap">
+    <h1>Changelog</h1>
+    <div class="callout">
+      <p><strong>App and engine are updated separately.</strong> The notes below are for the OpenTac app. The God's Eye View engine inside it updates on its own from the <em>stable</em> channel of <a href="{{links.mirror}}" rel="noopener">OpenTac's mirror</a>.
+      {{#if engine.known}}Current stable engine: <a href="{{engine.url}}" rel="noopener"><code>{{engine.tag}}</code></a>.{{else}}See the mirror for the current <code>stable-*</code> tag.{{/if}}</p>
+    </div>
+
+    {{#if releases}}
+    {{#each releases}}
+    <article class="release">
+      <h2 id="v{{version}}">{{name}}{{#if prerelease}} <span class="badge badge-pre">pre-release</span>{{/if}}</h2>
+      <p><time datetime="{{iso}}">{{date}}</time> &middot; <a href="{{url}}" rel="noopener">View on GitHub</a></p>
+      {{#if hasNotes}}{{{notesHtml}}}{{else}}<p class="muted">No release notes were written for this version.</p>{{/if}}
+    </article>
+    {{/each}}
+    <p><a href="{{links.appReleases}}" rel="noopener">Older releases on GitHub</a></p>
+    {{else}}
+    <div class="soon">
+      <h2>First release coming soon</h2>
+      <p>There are no published releases yet. Release notes will appear here after the first one. Meanwhile you can follow the project on GitHub.</p>
+      <a class="btn btn-primary" href="{{links.app}}" rel="noopener">OpenTac on GitHub</a>
+    </div>
+    {{/if}}
+  </div>
+</main>
+{{> footer}}

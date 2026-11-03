@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    groups:
+      # Electron, electron-builder and electron-updater move together with packaging changes;
+      # review them by hand (see docs/RELEASE.md, toolchain bumps) rather than as one blind batch.
+      dev-tooling:
+        dependency-type: development
+        patterns: ["vitest", "@playwright/test", "@types/*", "esbuild", "sharp", "typescript"]
+    ignore:
+      # Pinned deliberately; see docs/DECISIONS.md (Phase 0 facts).
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: electron
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]

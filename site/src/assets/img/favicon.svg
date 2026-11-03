@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="OpenTac">
+  <!-- OpenTac mark: a reticle over a horizon arc. Original work for OpenTac; not derived from upstream's logo. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5ee7ff"/>
+      <stop offset="1" stop-color="#1aa6c9"/>
+    </linearGradient>
+  </defs>
+  <!-- horizon arc -->
+  <path d="M56 352 A 230 230 0 0 1 456 352" fill="none" stroke="url(#g)" stroke-width="14" stroke-linecap="round" opacity="0.9"/>
+  <!-- outer ring -->
+  <circle cx="256" cy="232" r="128" fill="none" stroke="url(#g)" stroke-width="16"/>
+  <!-- inner ring -->
+  <circle cx="256" cy="232" r="64" fill="none" stroke="#5ee7ff" stroke-width="10" opacity="0.85"/>
+  <!-- crosshair ticks -->
+  <g stroke="#5ee7ff" stroke-width="16" stroke-linecap="round">
+    <line x1="256" y1="56" x2="256" y2="112"/>
+    <line x1="256" y1="352" x2="256" y2="408"/>
+    <line x1="80" y1="232" x2="136" y2="232"/>
+    <line x1="376" y1="232" x2="432" y2="232"/>
+  </g>
+  <!-- centre dot -->
+  <circle cx="256" cy="232" r="18" fill="#ff5c5c"/>
+</svg>

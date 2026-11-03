@@ -1,0 +1,264 @@
+# Builds, signs, notarizes and verifies both macOS architectures on NATIVE runners, then assembles a DRAFT
+# GitHub release. Nothing here ever publishes: the owner smoke-tests the draft and publishes by hand (docs/RELEASE.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Validate tag name
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then tag="$INPUT_TAG"; else tag="$REF_NAME"; fi
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a release tag (expected vX.Y.Z or vX.Y.Z-suffix)"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+
+      - name: Tag must match package.json version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "v$pkg" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match package.json version $pkg"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, arch: arm64, dir: mac-arm64 }
+          - { runner: macos-15-intel, arch: x64, dir: mac }
+    env:
+      ARCH: ${{ matrix.arch }}
+      OUT_DIR: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.preflight.outputs.tag }}
+
+      - name: Read pinned Node version
+        id: nv
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nv.outputs.version }}
+          cache: npm
+
+      - name: Require signing and notarization secrets
+        # electron-builder only WARNS when notarization credentials are missing and still exits 0; fail early instead.
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=0
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::secret $name is not set (see docs/RELEASE.md)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # Native install on purpose: dugite's postinstall downloads git for the CURRENT architecture only.
+      - run: npm ci
+
+      - run: npm run fetch-node
+
+      # build/icon.icns is generated (gitignored); electron-builder needs it.
+      - run: npm run make-icon
+
+      - run: npm run build
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$key_path"
+          # electron-builder (@electron/notarize) wants a PATH in APPLE_API_KEY, not the key contents.
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+
+      - name: Package, sign and notarize
+        # CSC_LINK (base64 .p12) + CSC_KEY_PASSWORD are read by electron-builder directly; it creates and
+        # cleans up its own temporary keychain, so no manual `security import` is needed.
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        # The targets are named on the command line ON PURPOSE. electron-builder.yml gives each target an explicit
+        # `arch: [arm64, x64]`, and that list overrides a bare `--arm64`/`--x64` (both arches get built, notarized
+        # twice, and the cross-arch app gets the wrong dugite git). Naming `dmg zip` makes the CLI arch authoritative.
+        run: npx electron-builder --mac dmg zip "--${ARCH}" --publish never
+
+      - name: Remove App Store Connect API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Verify bundle structure
+        run: scripts/verify-bundle.sh "release/${OUT_DIR}/OpenTac.app" "$ARCH"
+
+      - name: Verify signature, Gatekeeper and notarization ticket (app and dmg)
+        run: |
+          set -euo pipefail
+          dmgs=(release/*.dmg); zips=(release/*.zip); maps=(release/*.blockmap)
+          if [ "${#dmgs[@]}" -ne 1 ] || [ ! -f "${dmgs[0]}" ] \
+            || [ "${#zips[@]}" -ne 1 ] || [ ! -f "${zips[0]}" ] \
+            || [ "${#maps[@]}" -ne 2 ] || [ ! -f "${maps[0]}" ]; then
+            echo "::error::expected release/ to hold exactly 1 dmg, 1 zip and 2 blockmaps (single architecture); found: ${dmgs[*]} ${zips[*]} ${maps[*]}"
+            exit 1
+          fi
+          scripts/verify-notarized.sh "release/${OUT_DIR}/OpenTac.app" "${dmgs[0]}"
+
+      - name: Electron fuses (informational)
+        continue-on-error: true
+        run: npx --no-install @electron/fuses read --app "release/${OUT_DIR}/OpenTac.app"
+
+      - name: Name the update manifest per architecture
+        run: |
+          set -euo pipefail
+          test -f release/latest-mac.yml
+          # Belt and braces: this job's manifest must describe only this job's architecture. Default artifact
+          # names carry "arm64" for arm64 and nothing for x64, so any mismatch means a cross-arch build slipped in.
+          urls="$(sed -n 's/^ *\(- \)\{0,1\}url: //p' release/latest-mac.yml)"
+          [ -n "$urls" ] || { echo "::error::latest-mac.yml lists no files"; exit 1; }
+          while IFS= read -r u; do
+            case "$ARCH:$u" in
+              arm64:*arm64*) ;;
+              x64:*arm64*) echo "::error::x64 manifest names arm64 file $u"; exit 1 ;;
+              x64:*) ;;
+              *) echo "::error::arm64 manifest names non-arm64 file $u"; exit 1 ;;
+            esac
+          done <<< "$urls"
+          mv release/latest-mac.yml "release/latest-mac-${ARCH}.yml"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac-${{ matrix.arch }}.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Assemble draft release
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.preflight.outputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.preflight.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: assets
+
+      - name: Merge update manifests and write checksums
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          ls -l
+          dmgs=(./*.dmg); zips=(./*.zip)
+          if [ "${#dmgs[@]}" -ne 2 ] || [ "${#zips[@]}" -ne 2 ]; then
+            echo "::error::expected 2 dmg and 2 zip assets, found ${#dmgs[@]} and ${#zips[@]}"
+            exit 1
+          fi
+          node ../scripts/merge-latest-mac.mjs latest-mac-arm64.yml latest-mac-x64.yml > latest-mac.yml
+          node ../scripts/sha256sums.mjs ./*.dmg ./*.zip > SHA256SUMS.txt
+          echo "--- latest-mac.yml"; cat latest-mac.yml
+          echo "--- SHA256SUMS.txt"; cat SHA256SUMS.txt
+          # Every file the manifest names must be a release asset.
+          sed -n 's/^ *\(- \)\{0,1\}url: //p' latest-mac.yml | while IFS= read -r f; do
+            test -f "$f" || { echo "::error::latest-mac.yml names $f which was not built"; exit 1; }
+          done
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          # Best effort: record which engine 'stable' tag was current at release time.
+          stable="$(git ls-remote --tags https://github.com/gonzoinceng-ctrl/opentac-engine 'refs/tags/stable-*' 2>/dev/null \
+            | sed -n 's#.*refs/tags/\(stable-[^^]*\)$#\1#p' | sort -V | tail -n 1 || true)"
+          OPENTAC_ENGINE_STABLE="$stable" node scripts/release-notes.mjs "$TAG" > release-notes.md
+          cat release-notes.md
+
+      - name: Create or reuse the DRAFT release and upload assets
+        run: |
+          set -euo pipefail
+          state="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
+          if [ "$state" = "false" ]; then
+            echo "::error::release $TAG is already published; refusing to modify it. Delete it first if you really mean to rebuild (docs/RELEASE.md, rollback)."
+            exit 1
+          elif [ "$state" = "true" ]; then
+            echo "Reusing existing draft for $TAG"
+            gh release edit "$TAG" --title "OpenTac $TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --draft --verify-tag --title "OpenTac $TAG" --notes-file release-notes.md
+          fi
+          cd assets
+          gh release upload "$TAG" ./*.dmg ./*.zip ./*.blockmap latest-mac.yml SHA256SUMS.txt --clobber
+          {
+            echo "### Draft release ready: $TAG"
+            echo
+            echo "Not published. Smoke-test the draft assets, then publish by hand (docs/RELEASE.md)."
+            echo
+            gh release view "$TAG" --json url --jq '.url' || true
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,52 @@
+---
+title: AI options
+description: Which AI providers OpenTac supports: summaries through OpenAI, Ollama, OpenRouter or xAI, and voice control through OpenAI or Gemini only.
+path: /ai/
+current: ai
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap">
+    <h1>AI options</h1>
+    <p class="lead">OpenTac does two separate AI jobs, and they have different provider choices. Voice control is not fully local, and OpenTac does not pretend otherwise.</p>
+
+    <div class="grid">
+      <section class="tile">
+        <h2>Summaries</h2>
+        <p><strong>OpenAI</strong> (default), <strong>Ollama</strong>, <strong>OpenRouter</strong> or <strong>xAI</strong>.</p>
+        <p>The short text summaries in the heads-up display can go to any of these. Choose in OpenTac's Preferences.</p>
+      </section>
+      <section class="tile">
+        <h2>Voice control</h2>
+        <p><strong>OpenAI or Gemini only.</strong></p>
+        <p>Voice runs through the globe's own panel and your own key. OpenTac never reroutes it.</p>
+      </section>
+    </div>
+
+    <div class="prose">
+      <h2>Summaries</h2>
+      <ul>
+        <li><strong>OpenAI.</strong> The default. OpenTac changes nothing about the engine's network traffic.</li>
+        <li><strong>Ollama.</strong> Runs on your Mac, so summary text never leaves it. Needs Ollama installed and a small instruct model pulled. The default address is <code>127.0.0.1:11434</code>.</li>
+        <li><strong>OpenRouter.</strong> Any model OpenRouter offers, with your OpenRouter key.</li>
+        <li><strong>xAI.</strong> Grok models, with your xAI key.</li>
+      </ul>
+      <p>Only the summary request is redirected, through a small gateway that OpenTac runs on 127.0.0.1 inside the app. Keys for OpenRouter and xAI are encrypted on your Mac with the help of the macOS Keychain. A <em>Test</em> button in Preferences sends one line to your chosen provider and shows the reply and how long it took.</p>
+
+      <h2>Voice control</h2>
+      <p>Voice uses OpenAI Realtime or Gemini Live, chosen in the globe's own mic panel. It needs an OpenAI or Gemini key. The microphone is used only when you turn voice on, and audio then goes to the provider you picked. Other providers, xAI included, are not used for voice in OpenTac: the upstream voice feature is built for OpenAI and Gemini.</p>
+      <p>Running Ollama for summaries does <strong>not</strong> make voice local.</p>
+
+      <h2>Local and thinking models</h2>
+      <div class="callout callout-warn">
+        <p>Models that "think" before answering (Qwen3 and similar reasoning models) can spend the whole token budget on reasoning and return an empty summary. OpenTac asks providers to turn reasoning off, but not every model obeys. If summaries come back blank, pick a non-thinking instruct model, or use the Test button, which reports an empty reply plainly instead of failing silently.</p>
+      </div>
+      <p>Small models (roughly 3 to 8 billion parameters) are plenty for these summaries and run comfortably on Apple Silicon.</p>
+
+      <h2>One catch</h2>
+      <p>While summaries use Ollama, OpenRouter or xAI, the engine's own OpenAI key field is locked. If you want voice with OpenAI, enter that key <em>before</em> switching, or switch back to OpenAI first. Gemini voice keys are unaffected. <a href="/keys/">More on keys</a>.</p>
+    </div>
+  </div>
+</main>
+{{> footer}}

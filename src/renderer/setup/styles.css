@@ -1,0 +1,540 @@
+:root {
+  color-scheme: dark light;
+  --bg: #0a0a0f;
+  --bg-raised: #14141c;
+  --bg-sunken: #0e0e14;
+  --fg: #e8e8ee;
+  --fg-muted: #9a9aaa;
+  --border: #2a2a38;
+  --accent: #4da3ff;
+  --accent-fg: #06121f;
+  --warn-bg: #3a3000;
+  --warn-border: #b89b00;
+  --warn-fg: #ffe27a;
+  --info-bg: #10304a;
+  --info-border: #2f78b3;
+  --danger: #ff7b72;
+  --ok: #56d364;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f6f9;
+    --bg-raised: #ffffff;
+    --bg-sunken: #eeeef3;
+    --fg: #16161d;
+    --fg-muted: #5b5b6b;
+    --border: #d4d4de;
+    --accent: #0a62c9;
+    --accent-fg: #ffffff;
+    --warn-bg: #fff6cc;
+    --warn-border: #b89b00;
+    --warn-fg: #5c4a00;
+    --info-bg: #e3f1ff;
+    --info-border: #2f78b3;
+    --danger: #c0262d;
+    --ok: #1a7f37;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-header {
+  padding: 14px 24px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.app-header-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.app-name {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.attribution {
+  margin: 2px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.attribution-strong {
+  font-weight: 600;
+}
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 28px;
+}
+
+.panel {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+h2:focus {
+  outline: none;
+}
+
+h3 {
+  margin: 20px 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+p {
+  margin: 0 0 10px;
+}
+
+.message {
+  font-size: 15px;
+}
+
+.summary {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.note {
+  color: var(--fg-muted);
+}
+
+.note:empty {
+  display: none;
+}
+
+.warn-text {
+  color: var(--warn-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: light) {
+  .warn-text {
+    color: var(--warn-fg);
+  }
+}
+
+.detail {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.banner {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 13px;
+}
+
+.banner-warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-fg);
+  font-weight: 600;
+}
+
+.banner-info {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+}
+
+.gate {
+  color: var(--ok);
+  font-size: 13px;
+}
+
+progress {
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin: 12px 0 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+
+progress::-webkit-progress-bar {
+  background: var(--bg-sunken);
+  border-radius: 5px;
+}
+
+progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 5px;
+  transition: width 0.15s linear;
+}
+
+.log {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#log {
+  height: 200px;
+}
+
+.commit-list {
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.commit-list li {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.commit-list li:last-child {
+  border-bottom: 0;
+}
+
+.commit-sha {
+  grid-row: span 2;
+  font: 12px var(--mono);
+  color: var(--accent);
+}
+
+.commit-subject {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.commit-meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.plain-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.caveats {
+  margin-top: 18px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+details {
+  margin: 0 0 12px;
+}
+
+summary {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 12px 0;
+}
+
+.facts dt {
+  color: var(--fg-muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.notices {
+  padding: 0 24px;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--info-border);
+  border-radius: 6px;
+  background: var(--info-bg);
+  font-size: 13px;
+}
+
+.notice button {
+  padding: 2px 8px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.button-row.left {
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
+.secondary-row {
+  margin-top: 8px;
+  justify-content: flex-start;
+}
+
+button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+}
+
+.tabs button[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  font-weight: 650;
+}
+
+.field {
+  margin: 14px 0;
+}
+
+.field > label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+input[type='text'],
+input[type='password'],
+select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: inherit;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+}
+
+.inline input {
+  flex: 1 1 auto;
+}
+
+.check,
+.radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+fieldset.radios {
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+fieldset.radios legend {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.test-result {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.test-result .ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.test-result .bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* USB picker page */
+.usb-body {
+  display: block;
+}
+
+.usb-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 18px 20px;
+}
+
+.usb-heading {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.usb-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 8px 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+}
+
+.usb-item {
+  display: block;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.usb-item:last-child {
+  border-bottom: 0;
+}
+
+.usb-item[aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.usb-item[aria-selected='true'] .usb-item-detail {
+  color: inherit;
+}
+
+.usb-item-title {
+  display: block;
+  font-weight: 600;
+}
+
+.usb-item-detail {
+  display: block;
+  color: var(--fg-muted);
+  font: 12px var(--mono);
+}

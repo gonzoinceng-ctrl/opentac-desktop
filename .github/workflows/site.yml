@@ -1,0 +1,91 @@
+# Rebuilds https://opentac.icu and deploys it to Cloudflare Pages (project: opentac).
+# Download data is resolved at BUILD time from this repo's published releases and the mirror's newest stable-* tag,
+# so the site is rebuilt on a schedule, on engine promotions, and whenever a release is published by hand.
+name: Site
+
+on:
+  schedule:
+    - cron: "11 */6 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [engine-promoted]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+env:
+  # Output directory produced by `npm run site:build` (see the site assignment / docs/RELEASE.md).
+  SITE_OUT_DIR: site/dist
+  CF_PROJECT: opentac
+
+jobs:
+  build-deploy:
+    name: Build and deploy site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Always the default branch: a `release` event would otherwise check out the (old) release tag.
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+
+      - name: Read pinned Node version
+        id: nv
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nv.outputs.version }}
+          cache: npm
+
+      # --ignore-scripts: the site build needs no Electron/dugite downloads (hundreds of MB of postinstall fetches).
+      - run: npm ci --ignore-scripts
+
+      - name: Find the mirror's newest stable-* tag
+        id: engine
+        run: |
+          set -uo pipefail
+          # Names sort correctly (stable-YYYY.MM.DD, then -N); best effort only: the site tolerates an empty value.
+          stable="$(git ls-remote --tags https://github.com/gonzoinceng-ctrl/opentac-engine 'refs/tags/stable-*' 2>/dev/null \
+            | sed -n 's#.*refs/tags/\(stable-[^^]*\)$#\1#p' | sort -V | tail -n 1)"
+          echo "tag=${stable}" >> "$GITHUB_OUTPUT"
+          echo "newest stable tag: ${stable:-none}"
+
+      - name: Build site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENTAC_ENGINE_STABLE: ${{ steps.engine.outputs.tag }}
+        run: npm run site:build
+
+      - name: Check build output
+        run: |
+          test -d "$SITE_OUT_DIR" || { echo "::error::$SITE_OUT_DIR was not produced by npm run site:build"; exit 1; }
+          test -f "$SITE_OUT_DIR/index.html" || { echo "::error::$SITE_OUT_DIR/index.html missing"; exit 1; }
+
+      - name: Check Cloudflare credentials
+        id: cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set; built the site but skipped the deploy."
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.cf.outputs.enabled == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy ${{ env.SITE_OUT_DIR }} --project-name=${{ env.CF_PROJECT }} --branch=main --commit-dirty=true

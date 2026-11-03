@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Choose a USB device</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="usb-body">
+    <main class="usb-main">
+      <h1 id="usb-title" class="usb-heading">Choose a USB device</h1>
+      <p id="usb-help" class="muted small">God's Eye View wants to use a USB device, such as a radio dongle. Pick one, or cancel.</p>
+      <ul id="usb-list" class="usb-list" role="listbox" aria-labelledby="usb-title" aria-describedby="usb-help" tabindex="0"></ul>
+      <p id="usb-empty" class="muted" role="status" hidden>No USB devices were found. Plug one in and it will appear here.</p>
+      <div class="button-row">
+        <button type="button" id="usb-cancel">Cancel</button>
+        <button type="button" id="usb-select" class="primary" disabled>Select</button>
+      </div>
+    </main>
+    <script type="module" src="usb-picker.js"></script>
+  </body>
+</html>

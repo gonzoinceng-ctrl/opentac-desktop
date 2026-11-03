@@ -116,3 +116,10 @@ Built and proven locally: 12 contract checks pass against upstream HEAD `48146f8
 - The gate's smoke legs report `PENDING` and pass until the app repo publishes `npm run e2e`; after that they gate for real. The Intel leg is `continue-on-error` until Intel runner availability is confirmed stable.
 - `node --test engine-mirror/ci/test` (bare directory) fails on Node 24.22; use the glob or `npm test` inside `engine-mirror/`.
 - `bootstrap.sh` has been written and syntax-checked but **never run**; running it creates a public GitHub repository and is the owner's call.
+
+## 2026-11-03 — CI, docs and website notes
+
+- `release.yml` builds each architecture in its own native job with `electron-builder --mac dmg zip --<arch>`: naming the targets on the command line makes the CLI arch authoritative, because the `arch:` lists in `electron-builder.yml` otherwise override a bare `--arm64`. A `preflight` job validates the tag against `package.json`, and the build fails early if any signing or notarization secret is empty (electron-builder only warns).
+- `www.opentac.icu → opentac.icu` cannot be expressed in Cloudflare Pages' `_redirects` (path rules only); it is a Cloudflare Redirect Rule on the zone, documented in `site/README.md`.
+- There is no `server.log` yet: engine output lives in the 200-line in-memory ring (shown in the setup window) and in `checkout/.gev-logs/`; `main.log` records spawn, ready and exit lines. A rotated, redacted `server.log` tee (brief 03 §4.9) and an `OPENTAC_LOG_LEVEL` override are tracked as shell-layer follow-ups.
+- Repo root carries an MIT `LICENSE` for OpenTac's own code (Simon Tucker, 2026) with a pointer to the upstream and data-licence situation in `THIRD_PARTY_NOTICES.md`.

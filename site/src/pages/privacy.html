@@ -1,0 +1,37 @@
+---
+title: Privacy
+description: OpenTac has no telemetry. What the app and this website contact, where your keys are stored, and what the local endpoint exposes.
+path: /privacy/
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap prose">
+    <h1>Privacy</h1>
+    <p class="lead">OpenTac has no telemetry, no analytics and no accounts. This page lists what it does contact, so you can check.</p>
+
+    <h2>The app</h2>
+    <ul>
+      <li><strong>GitHub.</strong> OpenTac fetches the God's Eye View code from its mirror (<a href="{{links.mirror}}" rel="noopener">{{links.mirror}}</a>) and checks it for updates while running (at launch, every few hours, on wake and on window focus). It checks for new app versions through GitHub Releases. GitHub sees your IP address, as any website would.</li>
+      <li><strong>The npm registry.</strong> Installing and updating the engine's dependencies downloads packages from npm.</li>
+      <li><strong>nodejs.org</strong> is contacted only when the app is built, never when you run it.</li>
+      <li><strong>God's Eye View's own data providers.</strong> The globe fetches live data (flights, ships, satellites, imagery, maps, cameras) from the providers its authors chose, directly from your Mac. Which providers, and their terms, are listed in upstream's <a href="{{links.upstreamData}}" rel="noopener">DATA_SOURCES.md</a>. Those requests carry whatever the provider needs, such as the area you are viewing, and keys you supplied.</li>
+      <li><strong>Your chosen AI provider,</strong> if you turn on summaries or voice. See <a href="/ai/">AI options</a>.</li>
+    </ul>
+    <p>OpenTac itself sends nothing about you, your usage or your machine to its authors.</p>
+
+    <h2>Where your data is stored</h2>
+    <ul>
+      <li>API keys you enter in the globe are saved in the engine's <code>.env</code> file on your Mac and sent only to their own provider.</li>
+      <li>Keys for OpenRouter and xAI summaries are stored encrypted on your Mac, protected by a key held in the macOS Keychain. They are not written to the engine's <code>.env</code>.</li>
+      <li>OpenTac's settings and logs stay in its folder under <code>~/Library/Application Support</code>. Logs have key-shaped text redacted.</li>
+    </ul>
+
+    <h2>Local-only endpoints</h2>
+    <p>The engine listens on <code>127.0.0.1</code> only, on one fixed port. It includes a local <code>/mcp</code> endpoint, so any program running on your Mac under your account can read the globe through it while OpenTac is running. Nothing is reachable from other machines. If you do not want that, quit OpenTac when you are not using it.</p>
+
+    <h2>This website</h2>
+    <p>No analytics, no cookies, no fonts or scripts from other sites, and a policy that blocks the page from making any requests except to itself. Download links point to GitHub and are resolved when the site is built, so your browser makes no call to GitHub until you click one. The site is hosted on Cloudflare Pages, which keeps ordinary server logs of requests.</p>
+  </div>
+</main>
+{{> footer}}

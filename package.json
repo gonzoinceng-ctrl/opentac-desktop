@@ -22,7 +22,9 @@
     "e2e": "playwright test -c test/e2e/playwright.config.ts",
     "pack": "npm run build && electron-builder --mac --dir",
     "dist": "npm run build && electron-builder --mac --publish never",
-    "release": "npm run build && electron-builder --mac --publish always"
+    "release": "npm run build && electron-builder --mac --publish always",
+    "site:build": "node site/build.mjs",
+    "site:dev": "node site/build.mjs --serve"
   },
   "dependencies": {
     "dugite": "3.3.2",

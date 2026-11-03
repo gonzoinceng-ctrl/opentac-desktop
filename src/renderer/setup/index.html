@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OpenTac</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header-row">
+        <h1 class="app-name">OpenTac</h1>
+        <p id="versions" class="muted small" aria-label="Versions"></p>
+      </div>
+      <p id="attribution" class="attribution">OpenTac is an unofficial desktop app for God's Eye View by Bilawal Sidhu (MIT)</p>
+    </header>
+
+    <div id="notices" class="notices" role="status" aria-live="polite"></div>
+
+    <main id="main">
+      <!-- progress -->
+      <section id="panel-progress" class="panel" aria-labelledby="progress-title" hidden>
+        <h2 id="progress-title" tabindex="-1"></h2>
+        <p id="progress-message" class="message"></p>
+        <progress id="progress-bar" max="100" aria-labelledby="progress-title"></progress>
+        <p id="progress-label" class="muted small"></p>
+        <p id="progress-note" class="note"></p>
+        <p id="log-paused" class="muted small" hidden>Scrolling is paused. Scroll to the bottom to follow new output again.</p>
+        <pre id="log" class="log" tabindex="0" role="log" aria-label="Recent output" aria-live="off"></pre>
+      </section>
+
+      <!-- disclosure -->
+      <section id="panel-disclosure" class="panel" aria-labelledby="disclosure-title" hidden>
+        <h2 id="disclosure-title" tabindex="-1"></h2>
+        <p id="disclosure-summary" class="summary"></p>
+        <p id="disclosure-remote" class="muted small"></p>
+        <p id="disclosure-banner" class="banner banner-warn" role="note" hidden></p>
+        <p id="disclosure-gate" class="gate" hidden></p>
+        <p id="disclosure-security" class="banner banner-info" role="note" hidden>This update contains a security fix.</p>
+        <p id="disclosure-lockfile" class="note" hidden></p>
+        <p id="disclosure-block" class="note" hidden></p>
+        <div id="disclosure-dirty" hidden>
+          <h3>Local changes in the engine files</h3>
+          <ul id="disclosure-dirty-list" class="plain-list mono"></ul>
+        </div>
+        <h3 id="commits-heading">Changes in this update</h3>
+        <ol id="commit-list" class="commit-list" tabindex="0" aria-labelledby="commits-heading"></ol>
+        <details id="diffstat-details">
+          <summary>File changes</summary>
+          <pre id="diffstat" class="log"></pre>
+        </details>
+        <div class="button-row" id="disclosure-buttons"></div>
+        <p class="button-row secondary-row">
+          <button type="button" id="btn-view-github" class="link-button" hidden>View on GitHub</button>
+        </p>
+      </section>
+
+      <!-- crash -->
+      <section id="panel-crash" class="panel" aria-labelledby="crash-title" hidden>
+        <h2 id="crash-title" tabindex="-1">The engine stopped unexpectedly</h2>
+        <p id="crash-message" class="message">God's Eye View stopped running. The last lines it printed are below; they usually say why.</p>
+        <pre id="crash-log" class="log" tabindex="0" role="log" aria-label="Last output before the engine stopped"></pre>
+        <div class="button-row" id="crash-buttons"></div>
+      </section>
+
+      <!-- error -->
+      <section id="panel-error" class="panel" aria-labelledby="error-title" hidden>
+        <h2 id="error-title" tabindex="-1"></h2>
+        <p id="error-message" class="message"></p>
+        <p id="error-detail" class="mono small detail" hidden></p>
+        <div class="button-row" id="error-buttons"></div>
+      </section>
+
+      <!-- about -->
+      <section id="panel-about" class="panel" aria-labelledby="about-title" hidden>
+        <h2 id="about-title" tabindex="-1">About OpenTac</h2>
+        <p class="attribution-strong" id="about-attribution">OpenTac is an unofficial desktop app for God's Eye View by Bilawal Sidhu (MIT)</p>
+        <dl class="facts">
+          <dt>OpenTac (this app)</dt>
+          <dd id="about-app"></dd>
+          <dt>God's Eye View (engine)</dt>
+          <dd id="about-engine"></dd>
+          <dt>Engine channel</dt>
+          <dd id="about-channel"></dd>
+          <dt>Electron</dt>
+          <dd id="about-electron"></dd>
+          <dt>Bundled Node</dt>
+          <dd id="about-node"></dd>
+          <dt>Data folder</dt>
+          <dd id="about-datadir" class="mono"></dd>
+        </dl>
+        <p class="note">The 3D map needs hardware graphics. If it looks slow or blank, open Developer, then GPU status, in the View menu to check that the GPU is in use.</p>
+        <p>
+          <button type="button" id="btn-licenses" class="link-button">View licences</button>
+          <span class="muted small"> (opens opentac.icu/licenses in your browser)</span>
+        </p>
+        <div class="button-row">
+          <button type="button" id="btn-about-close" class="primary">Close</button>
+        </div>
+      </section>
+
+      <!-- preferences -->
+      <section id="panel-preferences" class="panel" aria-labelledby="prefs-title" hidden>
+        <h2 id="prefs-title" tabindex="-1">Preferences</h2>
+        <div class="tabs" role="tablist" aria-label="Preferences sections">
+          <button type="button" role="tab" id="tab-general" aria-controls="tabpanel-general" aria-selected="true" tabindex="0">General</button>
+          <button type="button" role="tab" id="tab-channel" aria-controls="tabpanel-channel" aria-selected="false" tabindex="-1">Engine channel</button>
+          <button type="button" role="tab" id="tab-ai" aria-controls="tabpanel-ai" aria-selected="false" tabindex="-1">AI</button>
+        </div>
+
+        <div id="tabpanel-general" class="tabpanel" role="tabpanel" aria-labelledby="tab-general">
+          <h3>Engine updates</h3>
+          <label class="check">
+            <input type="checkbox" id="pref-update-on-launch" />
+            <span>Check for engine updates when OpenTac starts</span>
+          </label>
+          <p class="muted small">Engine updates are never applied without showing you what changes first.</p>
+          <div class="button-row left">
+            <button type="button" id="btn-check-engine">Check for engine updates now</button>
+          </div>
+          <h3>OpenTac app updates</h3>
+          <p class="muted small">Updates to OpenTac itself are separate from engine updates.</p>
+          <div class="button-row left">
+            <button type="button" id="btn-check-app">Check for OpenTac updates</button>
+          </div>
+          <h3>Troubleshooting</h3>
+          <div class="button-row left">
+            <button type="button" id="btn-show-logs">Show logs</button>
+          </div>
+        </div>
+
+        <div id="tabpanel-channel" class="tabpanel" role="tabpanel" aria-labelledby="tab-channel" hidden>
+          <fieldset class="radios">
+            <legend>Which engine versions should OpenTac follow?</legend>
+            <label class="radio">
+              <input type="radio" name="channel" value="stable" />
+              <span><strong>Stable</strong> (recommended)<br /><span class="muted small">Versions OpenTac has tested and let settle for several days.</span></span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="channel" value="candidate" />
+              <span><strong>Canary</strong> <span class="warn-text">Canary — may break</span><br /><span class="muted small">The next stable version while it is still being checked.</span></span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="channel" value="upstream" />
+              <span><strong>Upstream</strong> <span class="warn-text">Raw upstream, untested</span><br /><span class="muted small">The newest code straight from God's Eye View, with no checks at all.</span></span>
+            </label>
+          </fieldset>
+          <p id="channel-warning" class="banner banner-warn" role="note" hidden></p>
+          <p class="muted small">Changing the channel checks for an update straight away. Moving to an older version asks you to reset the engine files first.</p>
+        </div>
+
+        <div id="tabpanel-ai" class="tabpanel" role="tabpanel" aria-labelledby="tab-ai" hidden>
+          <p id="ai-encryption" class="banner banner-warn" role="note" hidden>Encryption is unavailable on this Mac right now, so OpenTac cannot store API keys. Ollama and OpenAI still work.</p>
+          <p class="muted small">This only changes the provider for the short summary line in the engine's heads-up display.</p>
+
+          <div class="field">
+            <label for="ai-provider">Summary provider</label>
+            <select id="ai-provider">
+              <option value="openai">OpenAI (default)</option>
+              <option value="ollama">Ollama (on this Mac)</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="xai">xAI</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ai-model">Model</label>
+            <input type="text" id="ai-model" list="ai-model-options" autocomplete="off" spellcheck="false" maxlength="200" />
+            <datalist id="ai-model-options"></datalist>
+            <p class="muted small" id="ai-model-help">Leave empty to use the provider's default.</p>
+          </div>
+          <div class="field" id="ai-ollama-fields" hidden>
+            <label for="ai-ollama-host">Ollama address</label>
+            <input type="text" id="ai-ollama-host" placeholder="http://127.0.0.1:11434" autocomplete="off" spellcheck="false" maxlength="300" />
+            <div class="button-row left">
+              <button type="button" id="btn-load-ollama">Load Ollama models</button>
+            </div>
+            <p id="ollama-status" class="muted small" role="status"></p>
+            <p class="muted small">Models are loaded from the address that is saved, so save your settings first after changing it.</p>
+          </div>
+
+          <div class="field" id="ai-key-openrouter">
+            <label for="key-openrouter">OpenRouter API key</label>
+            <div class="inline">
+              <input type="password" id="key-openrouter" autocomplete="off" spellcheck="false" maxlength="512" />
+              <button type="button" id="btn-save-key-openrouter">Save key</button>
+              <button type="button" id="btn-clear-key-openrouter">Remove key</button>
+            </div>
+            <p id="state-key-openrouter" class="muted small" role="status"></p>
+          </div>
+          <div class="field" id="ai-key-xai">
+            <label for="key-xai">xAI API key</label>
+            <div class="inline">
+              <input type="password" id="key-xai" autocomplete="off" spellcheck="false" maxlength="512" />
+              <button type="button" id="btn-save-key-xai">Save key</button>
+              <button type="button" id="btn-clear-key-xai">Remove key</button>
+            </div>
+            <p id="state-key-xai" class="muted small" role="status"></p>
+          </div>
+
+          <p id="ai-restart-note" class="note">Saving a different provider restarts the engine.</p>
+          <div class="button-row left">
+            <button type="button" id="btn-save-ai" class="primary">Save AI settings</button>
+            <button type="button" id="btn-test-ai">Test</button>
+          </div>
+          <p id="ai-save-status" class="muted small" role="status"></p>
+          <div id="ai-test-result" class="test-result" role="status" hidden>
+            <p id="ai-test-headline"></p>
+            <pre id="ai-test-text" class="log"></pre>
+            <p id="ai-test-meta" class="muted small"></p>
+          </div>
+
+          <ul class="plain-list caveats">
+            <li>Voice control uses OpenAI or Gemini — configure those in the engine's POWER UP panel.</li>
+            <li>While a non-OpenAI summary provider is active, the engine's OpenAI key row is locked; switch back to OpenAI to edit it.</li>
+          </ul>
+        </div>
+
+        <div class="button-row">
+          <button type="button" id="btn-prefs-close" class="primary">Done</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="setup.js"></script>
+  </body>
+</html>

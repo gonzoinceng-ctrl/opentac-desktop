@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Render build/icon-source.svg → build/icon.icns via sharp + iconutil.
- * The source SVG is derived from upstream's public/logo.svg (MIT, © Bilawal Sidhu);
- * see THIRD_PARTY_NOTICES.md. Idempotent; safe to re-run.
+ * The source SVG is an original OpenTac mark (reticle over a horizon arc), deliberately not derived
+ * from upstream's public/logo.svg; see THIRD_PARTY_NOTICES.md "App icon". Idempotent; safe to re-run.
  */
 import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

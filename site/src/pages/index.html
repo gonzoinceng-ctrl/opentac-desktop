@@ -1,0 +1,142 @@
+---
+title: OpenTac
+page-title: OpenTac | God's Eye View as a Mac app (unofficial)
+description: OpenTac is an unofficial macOS app for God's Eye View, the open-source real-time globe created by Bilawal Sidhu. Download for Apple Silicon or Intel.
+path: /
+---
+{{> head}}
+{{> header}}
+<main id="main">
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Unofficial macOS app</p>
+      <h1>OpenTac</h1>
+      <p class="lead">The open-source real-time globe, packaged as a Mac app. Install it, open it, and the live world is in front of you.</p>
+
+      <div class="credit">
+        <p>OpenTac is an unofficial macOS app for <a href="{{links.upstream}}" rel="noopener">God's Eye View</a>, the open-source real-time globe created by <a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu</a>. All the magic is his; OpenTac just makes it a double-click.</p>
+      </div>
+      <ul class="credit-links">
+        <li><a href="{{links.upstream}}" rel="noopener">God's Eye View on GitHub</a></li>
+        <li><a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu on YouTube</a></li>
+      </ul>
+      <p class="disclaimer">OpenTac is independent. It is not endorsed by, affiliated with, or supported by the upstream author. Questions or bugs about the globe itself belong in the <a href="{{links.upstreamIssues}}" rel="noopener">upstream repository</a>; problems with the Mac app or its installer belong in the <a href="{{links.appIssues}}" rel="noopener">OpenTac repository</a>.</p>
+
+      {{#if release.available}}
+      <div class="cta" {{{dl.archAttrs}}}>
+        <a class="btn btn-primary" data-arch-primary href="{{dl.primaryUrl}}"><span data-arch-label>{{dl.primaryLabel}}</span><small>Version {{release.latest.version}} &middot; macOS 13.5 or later</small></a>
+        <p class="cta-note">
+          {{#if dl.both}}<span data-arch-note></span> <a data-arch-alt href="{{dl.altUrl}}">{{dl.altLabel}}</a> &middot; {{/if}}<a href="/download/">Other downloads</a> &middot; <a href="/download/#verify">Verify the download</a>
+        </p>
+      </div>
+      {{else}}
+      <div class="cta">
+        <div class="soon">
+          <h2>First release coming soon</h2>
+          <p>OpenTac has not published its first build yet. In the meantime you can build it from source on GitHub.</p>
+          <a class="btn btn-primary" href="{{links.app}}" rel="noopener">Build from source on GitHub</a>
+        </div>
+      </div>
+      {{/if}}
+
+      <figure class="shot">
+        <!-- OWNER: drop real screenshots of OpenTac running into site/src/assets/img/screenshots/ and replace the
+             .shot-box div below with <img src="/assets/img/screenshots/main.png" width="1600" height="900" alt="...">.
+             Take them yourself; do NOT copy the upstream README's GIFs, thumbnails or screenshots (MIT covers code, not media). -->
+        <div class="shot-box" role="img" aria-label="Placeholder for a screenshot of OpenTac"><span>Screenshot coming soon</span></div>
+        <figcaption>Screenshots show God's Eye View running inside OpenTac.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="features">
+    <div class="wrap">
+      <h2 id="features">What you get</h2>
+      <ul class="grid">
+        <li class="tile">
+          <h3>The live world on one globe</h3>
+          <p>Aircraft, satellites, earthquakes, public cameras and launches work with no keys at all. Ships and fires switch on with free keys you add yourself.</p>
+        </li>
+        <li class="tile">
+          <h3>Voice control</h3>
+          <p>Talk to the globe. Voice uses OpenAI or Gemini and your own key; nothing is sent until you turn it on. <a href="/ai/">AI options</a></p>
+        </li>
+        <li class="tile">
+          <h3>Photorealistic 3D with your own keys</h3>
+          <p>Add a Cesium ion token or a Google Maps key for photorealistic cities. Keys stay on your Mac. <a href="/keys/">Which key unlocks what</a></p>
+        </li>
+        <li class="tile">
+          <h3>A self-updating engine</h3>
+          <p>The globe's code updates in place from GitHub, only after you have read what changes and confirmed it. A failed update rolls back.</p>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="how">
+    <div class="wrap">
+      <h2 id="how">How it works</h2>
+      <ol class="steps">
+        <li>
+          <h3>A runtime in the box</h3>
+          <p>OpenTac carries its own Node.js, so there is nothing to install and nothing on your PATH is touched.</p>
+        </li>
+        <li>
+          <h3>A live checkout from GitHub</h3>
+          <p>On first launch it fetches the God's Eye View code, installs its dependencies and starts it on 127.0.0.1. That takes a few minutes and needs internet.</p>
+        </li>
+        <li>
+          <h3>Updates with full disclosure</h3>
+          <p>OpenTac shows what changed before anything is applied, asks you to confirm, and keeps the previous version to roll back to.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="reqs">
+    <div class="wrap">
+      <h2 id="reqs">System requirements</h2>
+      <ul class="reqs">
+        <li><strong>macOS 13.5 or later</strong>, on Apple Silicon or Intel.</li>
+        <li>About 1 GB of disk after the first run; the installer wants at least 2 GB free.</li>
+        <li>An internet connection for the first run, for updates, and for the live data itself.</li>
+        <li>A Mac with working WebGL (any Mac that runs macOS 13.5 qualifies).</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="faq">
+    <div class="wrap">
+      <h2 id="faq">Questions</h2>
+      <details>
+        <summary>Is this the official God's Eye View app?</summary>
+        <div class="answer"><p>No. God's Eye View is made by Bilawal Sidhu. OpenTac is an independent, unofficial wrapper that makes it a double-click on a Mac. He has not endorsed it and does not support it.</p></div>
+      </details>
+      <details>
+        <summary>Do I need API keys?</summary>
+        <div class="answer"><p>No. It starts with no keys. Keys are optional extras for photorealistic 3D, ships, fires, traffic and voice. See <a href="/keys/">Keys</a>.</p></div>
+      </details>
+      <details>
+        <summary>Is it safe to open? Will macOS warn me?</summary>
+        <div class="answer"><p>Release builds are signed with a Developer ID and notarized by Apple, so the usual first-open prompt is all you should see. You can check the signature and the checksum yourself; the steps are on the <a href="/download/#verify">download page</a>.</p></div>
+      </details>
+      <details>
+        <summary>What does it send over the network?</summary>
+        <div class="answer"><p>No telemetry, no accounts. It talks to GitHub for the engine and its own updates, and the globe fetches live data from the providers God's Eye View uses. Details are on the <a href="/privacy/">privacy page</a>.</p></div>
+      </details>
+      <details>
+        <summary>How do engine updates reach me?</summary>
+        <div class="answer"><p>OpenTac follows a <em>stable</em> channel on its own mirror of the upstream code. New upstream commits are pulled in weekly, tested automatically, and wait several days before they are promoted to stable. You are always shown the change and asked first.</p></div>
+      </details>
+      <details>
+        <summary>Windows or Linux?</summary>
+        <div class="answer"><p>OpenTac is macOS only. God's Eye View itself runs elsewhere; see <a href="{{links.upstream}}" rel="noopener">its README</a>.</p></div>
+      </details>
+      <details>
+        <summary>Can I use it commercially?</summary>
+        <div class="answer"><p>OpenTac is distributed as a non-commercial project, because some data bundled with God's Eye View is licensed for non-commercial use only. Read the <a href="/licenses/">licenses page</a> before using it for anything commercial.</p></div>
+      </details>
+    </div>
+  </section>
+</main>
+{{> footer}}

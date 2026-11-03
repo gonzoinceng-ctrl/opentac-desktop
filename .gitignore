@@ -20,3 +20,6 @@ playwright-report/
 *.cer
 *.mobileprovision
 AuthKey_*.p8
+# generated / caches
+site/dist/
+.dugite-cache/

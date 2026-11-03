@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # dugite's postinstall downloads its git build here; cached below so CI does not re-download it every run.
+      DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Node version
+        id: nv
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nv.outputs.version }}
+          cache: npm
+
+      - name: Cache dugite git download
+        uses: actions/cache@v4
+        with:
+          path: .dugite-cache
+          key: dugite-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: dugite-${{ runner.os }}-
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vitest run
+      - name: Release script tests
+        run: node --test 'scripts/test/*.test.mjs'
+
+  mac:
+    name: macOS build, e2e and bundle check (arm64)
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      # Unsigned pack: never look for a signing identity or notarize on CI runs of main and pull requests.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Node version
+        id: nv
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nv.outputs.version }}
+          cache: npm
+
+      # Native install: dugite's postinstall fetches the git build matching this runner (arm64).
+      - run: npm ci
+
+      - name: Cache bundled Node (vendor/node)
+        uses: actions/cache@v4
+        with:
+          path: vendor/node
+          key: vendor-node-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/node-version.json', 'scripts/fetch-node.mjs') }}
+
+      - run: npm run fetch-node
+      - run: npm run build
+
+      - name: End-to-end smoke (Playwright _electron)
+        run: npm run e2e
+        continue-on-error: false
+
+      - name: Upload e2e report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ github.run_id }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # build/icon.icns is generated (gitignored); electron-builder needs it.
+      - run: npm run make-icon
+
+      - name: Unsigned pack (arm64)
+        run: npm run pack -- --arm64
+
+      - name: Verify bundle structure
+        run: scripts/verify-bundle.sh release/mac-arm64/OpenTac.app arm64

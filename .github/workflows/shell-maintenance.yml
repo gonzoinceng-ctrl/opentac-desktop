@@ -1,0 +1,71 @@
+# Weekly: is a newer Node 24.x patch or Electron 45.x patch available? Opens/updates one issue labelled `toolchain`
+# (docs/DECISIONS.md, staged update pipeline item 12). The bump itself is a human decision: docs/RELEASE.md.
+name: Shell maintenance
+
+on:
+  schedule:
+    - cron: "37 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: shell-maintenance
+  cancel-in-progress: false
+
+jobs:
+  toolchain:
+    name: Check toolchain updates
+    if: github.repository == 'gonzoinceng-ctrl/opentac-desktop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Node version
+        id: nv
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nv.outputs.version }}
+
+      - name: Run the check
+        id: check
+        run: |
+          set +e
+          node scripts/check-toolchain-updates.mjs > "$RUNNER_TEMP/report.md"
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/report.md"
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 0 = up to date, 2 = update available (handled below); anything else is a real failure.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi
+
+      - name: Open or update the toolchain issue
+        if: steps.check.outputs.code == '2'
+        run: |
+          set -euo pipefail
+          gh label create toolchain --color 0E8A16 --description "Node/Electron toolchain updates" 2>/dev/null || true
+          number="$(gh issue list --label toolchain --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/report.md"
+            gh issue comment "$number" --body "Re-checked on $(date -u +%Y-%m-%d): still pending. Report above updated."
+          else
+            gh issue create --title "Toolchain updates available (Node 24.x / Electron 45.x)" --label toolchain --body-file "$RUNNER_TEMP/report.md"
+          fi
+
+      - name: Close the toolchain issue once up to date
+        if: steps.check.outputs.code == '0'
+        run: |
+          set -euo pipefail
+          number="$(gh issue list --label toolchain --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "Toolchain is up to date as of $(date -u +%Y-%m-%d)."
+          fi
