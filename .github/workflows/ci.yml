@@ -27,7 +27,7 @@ jobs:
         id: nv
         run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.nv.outputs.version }}
           cache: npm
@@ -59,7 +59,7 @@ jobs:
         id: nv
         run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('scripts/node-version.json','utf8')).version")" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.nv.outputs.version }}
           cache: npm
