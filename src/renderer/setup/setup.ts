@@ -16,6 +16,7 @@ import type { Channel } from '../../shared/types.js';
 import {
   LICENSES_URL,
   channelName,
+  closeOverlayActions,
   dirtyFileLines,
   disclosureBlockNote,
   disclosureButtons,
@@ -85,6 +86,7 @@ function setHidden(node: HTMLElement, hidden: boolean): void {
 let current: PublicState | null = null;
 let shownPanel: PanelId | null = null;
 let logPaused = false;
+let closingOverlay = false;
 let aiDirty = false;
 const localNotices: string[] = [];
 const dismissedNotices = new Set<string>();
@@ -108,6 +110,30 @@ function runAction(name: ActionName): void {
   api.action(name).catch((err: unknown) => {
     reportFailure(`Could not do that (${labelForAction(name)}).`, err);
   });
+}
+
+/**
+ * Close Preferences or About. Closing About takes two shell actions (see closeOverlayActions), run
+ * in order; the intermediate Preferences state is not drawn so the panel does not flash.
+ */
+function closeOverlay(): void {
+  if (current === null) {
+    runAction('closePreferences');
+    return;
+  }
+  const names = closeOverlayActions(current);
+  closingOverlay = names.length > 1;
+  const run = async (): Promise<void> => {
+    try {
+      for (const name of names) await api.action(name);
+    } catch (err: unknown) {
+      reportFailure('Could not close that panel.', err);
+    } finally {
+      closingOverlay = false;
+      if (current !== null) render(current);
+    }
+  };
+  void run();
 }
 
 function openExternal(url: string): void {
@@ -507,13 +533,8 @@ async function loadOllamaModels(): Promise<void> {
 }
 
 function wireControls(): void {
-  byId('btn-prefs-close').addEventListener('click', () => {
-    runAction('closePreferences');
-  });
-  byId('btn-about-close').addEventListener('click', () => {
-    // The shell has one close action for both overlays.
-    runAction('closePreferences');
-  });
+  byId('btn-prefs-close').addEventListener('click', closeOverlay);
+  byId('btn-about-close').addEventListener('click', closeOverlay);
   byId('btn-licenses').addEventListener('click', () => {
     openExternal(LICENSES_URL);
   });
@@ -576,7 +597,7 @@ function wireControls(): void {
     const panel = panelForPhase(current);
     if (panel === 'preferences' || panel === 'about') {
       e.preventDefault();
-      runAction('closePreferences');
+      closeOverlay();
     }
   });
 
@@ -590,6 +611,8 @@ function wireControls(): void {
 
 function render(state: PublicState): void {
   current = state;
+  // While About is being closed, the shell passes through a Preferences state; skip drawing it.
+  if (closingOverlay && state.preferencesOpen) return;
   renderHeader(state);
   renderNotices(state);
 

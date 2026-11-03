@@ -6,6 +6,7 @@ import { ACTION_NAMES, PHASES, type Disclosure, type Phase } from '../../src/sha
 import type { ShellState } from '../../src/shared/types.js';
 import {
   AUTO_RESTART_GUARD_MS,
+  OFFLINE_BACKOFF_MS,
   CHECK_INTERVAL_MS,
   IllegalTransitionError,
   LAUNCH_CHECK_DELAY_MS,
@@ -458,9 +459,11 @@ describe('boot', () => {
     expect(h.ui.count('showSetup')).toBeGreaterThan(0);
   });
 
-  it('low disk space does not block an engine that needs no install', async () => {
+  it('low disk space is an ERROR even when the engine is installed (section 2 step 1)', async () => {
     const h = await boot({ free: 1 * GB });
-    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.controller.phase()).toBe('ERROR');
+    expect(h.controller.publicState().error?.code).toBe('DISK_SPACE');
+    expect(h.server.starts).toHaveLength(0);
   });
 
   it('retry after fixing the problem boots again', async () => {
@@ -786,9 +789,72 @@ describe('background update checks', () => {
     const err = h.controller.publicState().error;
     expect(err?.code).toBe('TAG_DRIFT');
     expect(err?.detail).toContain('would clobber');
-    // The installed engine can still be started.
+    // The installed engine can still be started: the still-running server is stopped first.
     await h.controller.action('restartServer');
     expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.starts).toHaveLength(2);
+  });
+
+  it('retry after TAG_DRIFT boots again without ALREADY_RUNNING', async () => {
+    const h = await boot();
+    h.update.results = [{ kind: 'tag-drift', detail: 'would clobber existing tag stable-1' }];
+    await h.controller.checkForEngineUpdates();
+    expect(h.controller.phase()).toBe('ERROR');
+    await h.controller.action('retry');
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.isRunning()).toBe(true);
+  });
+
+  it('a crash while CHECKING is handled when the check returns to RUNNING', async () => {
+    const h = await boot();
+    h.update.check = async () => {
+      h.server.emit({ type: 'exit', code: 9, signal: null, expected: false });
+      return { kind: 'up-to-date', label: 'v0.1.0' };
+    };
+    await h.controller.checkForEngineUpdates();
+    expect(h.phases).toContain('CRASHED');
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.server.starts).toHaveLength(2);
+  });
+
+  it('a crash while DISCLOSING is handled when the user chooses Later', async () => {
+    const h = await boot();
+    h.update.results = [available()];
+    await h.controller.action('checkForUpdates');
+    expect(h.controller.phase()).toBe('DISCLOSING');
+    h.server.emit({ type: 'exit', code: 9, signal: null, expected: false });
+    await flush();
+    expect(h.controller.phase()).toBe('DISCLOSING');
+    await h.controller.action('laterUpdate');
+    expect(h.phases).toContain('CRASHED');
+    expect(h.server.isRunning()).toBe(true);
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+
+  it('a crash while DISCLOSING shows CRASHED when the auto-restart guard blocks a restart', async () => {
+    const h = await boot();
+    h.server.emit({ type: 'exit', code: 1, signal: null, expected: false });
+    await flush();
+    h.update.results = [available()];
+    await h.controller.action('checkForUpdates');
+    h.server.emit({ type: 'exit', code: 9, signal: null, expected: false });
+    await h.controller.action('skipUpdate');
+    expect(h.controller.phase()).toBe('CRASHED');
+    expect(h.controller.publicState().error?.actions).toContain('restartServer');
+  });
+
+  it('an offline result backs background checks off for 15 minutes but not interactive ones', async () => {
+    const h = await boot();
+    h.update.results = [{ kind: 'offline' }];
+    await h.clock.advance(LAUNCH_CHECK_DELAY_MS);
+    expect(h.update.checks).toHaveLength(1);
+    h.controller.notifyMainFocus();
+    await flush();
+    expect(h.update.checks).toHaveLength(1);
+    await h.clock.advance(OFFLINE_BACKOFF_MS);
+    h.controller.notifyMainFocus();
+    await flush();
+    expect(h.update.checks).toHaveLength(2);
   });
 
   it('a thrown check error returns to RUNNING', async () => {
@@ -959,10 +1025,22 @@ describe('applying an update', () => {
       if (calls === 1) throw new InstallError('NETWORK', 'offline', 'ENOTFOUND');
       return { durationMs: 1, lockHash: 'lock-1', nodeVersion: '24.22.2', attempts: 1 };
     };
-    h.install.needsInstall = async () => (calls >= 1 ? { needed: true, reason: 'lock-changed' } : { needed: false, reason: 'up-to-date' });
+    // needsInstall is NOT stubbed: the fake answers from the recorded install, like the real one.
     await h.controller.action('confirmUpdate');
     expect(h.phases.slice(-6)).toEqual(['UPDATING', 'INSTALLING', 'ROLLING_BACK', 'INSTALLING', 'STARTING', 'RUNNING']);
+    expect(calls).toBe(2);
     expect(h.checkout.headSha).toBe(SHA_A);
+    expect(h.controller.state().installedLockHash).toBe('lock-1');
+  });
+
+  it('an install that fails leaves no recorded install, so nothing starts on a half-built tree', async () => {
+    const h = await boot();
+    h.install.installError = new InstallError('NPM_FAILED', 'npm failed', 'boom');
+    await h.controller.action('reinstall');
+    expect(h.controller.phase()).toBe('ERROR');
+    expect(h.controller.state().installedLockHash).toBeNull();
+    expect(h.controller.state().installedNodeVersion).toBeNull();
+    expect((await h.install.needsInstall(h.controller.state())).needed).toBe(true);
   });
 
   it('a failed checkout step rolls back', async () => {
@@ -1161,6 +1239,32 @@ describe('AI provider wiring', () => {
     await h.controller.action('laterUpdate');
     expect(h.server.starts).toHaveLength(2);
     expect(h.phases).toContain('RESTARTING');
+  });
+
+  it('a provider change made during CHECKING is applied when the check comes back offline', async () => {
+    const h = await boot();
+    h.update.check = async () => {
+      await h.controller.setAi({ provider: 'ollama', model: null, ollamaHost: null });
+      return { kind: 'offline' };
+    };
+    await h.controller.checkForEngineUpdates();
+    expect(h.server.starts).toHaveLength(2);
+    expect(h.phases).toContain('RESTARTING');
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+
+  it('a provider change picked up by a launch does not cause a second restart later', async () => {
+    const h = await boot();
+    h.server.startQueue = [new ServerError('START_FAILED', 'nope')];
+    await h.controller.action('restartServer');
+    expect(h.controller.phase()).toBe('ERROR');
+    await h.controller.setAi({ provider: 'ollama', model: null, ollamaHost: null });
+    await h.controller.action('restartServer');
+    expect(h.controller.phase()).toBe('RUNNING');
+    const starts = h.server.starts.length;
+    h.update.results = [{ kind: 'up-to-date', label: 'v0.1.0' }];
+    await h.controller.action('checkForUpdates');
+    expect(h.server.starts).toHaveLength(starts);
   });
 
   it('a gateway that fails to start degrades to no summaries with a notice', async () => {

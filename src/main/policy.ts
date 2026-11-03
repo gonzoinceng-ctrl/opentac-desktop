@@ -87,6 +87,33 @@ export function decidePermission(
 /** A remembered WebUSB pick, optionally with the product name Chromium reported. */
 export type RememberedUsbDevice = UsbDeviceId & { productName?: string | null };
 
+/** Builds the entry to remember from a pick, keeping only the identity fields that are present. */
+export function toRememberedUsb(d: {
+  vendorId: number;
+  productId: number;
+  serialNumber?: string | null | undefined;
+  productName?: string | null | undefined;
+}): RememberedUsbDevice {
+  const entry: RememberedUsbDevice = { vendorId: d.vendorId, productId: d.productId };
+  if (d.serialNumber !== undefined && d.serialNumber !== null && d.serialNumber !== '') {
+    entry.serialNumber = d.serialNumber;
+  }
+  if (d.productName !== undefined && d.productName !== null && d.productName !== '') {
+    entry.productName = d.productName;
+  }
+  return entry;
+}
+
+/** True when two remembered entries describe the same device identity, product name included. */
+export function sameUsbIdentity(a: RememberedUsbDevice, b: RememberedUsbDevice): boolean {
+  return (
+    a.vendorId === b.vendorId &&
+    a.productId === b.productId &&
+    (a.serialNumber ?? null) === (b.serialNumber ?? null) &&
+    (a.productName ?? null) === (b.productName ?? null)
+  );
+}
+
 /** A device as Chromium describes it. */
 export interface UsbDeviceLike {
   vendorId: number;

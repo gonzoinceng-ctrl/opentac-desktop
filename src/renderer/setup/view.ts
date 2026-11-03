@@ -53,6 +53,19 @@ export function panelForPhase(state: PanelInput): PanelId {
   }
 }
 
+/**
+ * The shell actions that close whatever overlay is showing. The shell has one close action,
+ * 'closePreferences', which clears Preferences but leaves About open; 'openPreferences' clears
+ * About. So closing About runs the pair, which leaves both closed (and hides the window when the
+ * app is running). Closing Preferences, or any state with no About open, is a single action.
+ */
+export function closeOverlayActions(
+  state: Pick<PublicState, 'preferencesOpen' | 'aboutOpen'>,
+): ActionName[] {
+  if (state.aboutOpen && !state.preferencesOpen) return ['openPreferences', 'closePreferences'];
+  return ['closePreferences'];
+}
+
 /** A plain-sentence title for the progress panel. */
 export function phaseTitle(phase: Phase): string {
   switch (phase) {

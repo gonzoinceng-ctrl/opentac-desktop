@@ -16,7 +16,13 @@ import type {
 import type { ControllerTimers } from '../../src/main/controller.js';
 import type { SecretsApi, ShellUi, ShellUpdaterApi } from '../../src/main/contracts.js';
 import type { InstallManager, InstallProgress, InstallResult, NeedsInstall } from '../../src/main/install.js';
-import type { ServerEvent, ServerHandle, ServerManager, ServerStartOptions } from '../../src/main/server.js';
+import {
+  ServerError,
+  type ServerEvent,
+  type ServerHandle,
+  type ServerManager,
+  type ServerStartOptions,
+} from '../../src/main/server.js';
 import type { UpdateCheck, UpdateManager } from '../../src/main/update.js';
 import type { PublicState } from '../../src/shared/ipc.js';
 import { defaultState } from '../../src/main/state.js';
@@ -284,8 +290,14 @@ export class FakeInstall implements InstallManager {
   async bundledNodeVersion(): Promise<string> {
     return '24.22.2';
   }
-  async needsInstall(): Promise<NeedsInstall> {
+  async needsInstall(
+    state?: Pick<ShellState, 'installedLockHash' | 'installedNodeVersion' | 'installedCommit'>,
+  ): Promise<NeedsInstall> {
     this.calls.push('needsInstall');
+    // Like the real manager: no recorded install means an install is needed.
+    if (state !== undefined && (state.installedLockHash === null || state.installedNodeVersion === null)) {
+      return { needed: true, reason: 'never-installed' };
+    }
     return this.needs;
   }
   async install(onProgress: (p: InstallProgress) => void): Promise<InstallResult> {
@@ -322,6 +334,7 @@ export class FakeServer implements ServerManager {
   async start(opts: ServerStartOptions): Promise<ServerHandle> {
     this.starts.push(opts);
     this.trace.push('server.start');
+    if (this.current !== null) throw new ServerError('ALREADY_RUNNING', 'The server is already running or starting.');
     const next = this.startQueue.shift();
     if (next instanceof Error) throw next;
     this.current = { port: opts.port, url: `http://127.0.0.1:${opts.port}/`, pid: 4242 };

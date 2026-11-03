@@ -141,7 +141,7 @@ runner because dugite downloads git for one architecture only.
 Everything OpenTac writes lives outside the signed app bundle:
 
 - Data: `~/Library/Application Support/OpenTac/` (checkout, `.env`, caches, `state.json`)
-- Logs: `~/Library/Logs/OpenTac/` (`main.log`)
+- Logs: `~/Library/Logs/OpenTac/` (`main.log`, `server.log`)
 
 Layout, what each path is for, and what is safe to delete: [`docs/DATA-DIR.md`](docs/DATA-DIR.md).
 
@@ -149,9 +149,11 @@ Layout, what each path is for, and what is safe to delete: [`docs/DATA-DIR.md`](
 
 - **Logs**: *Engine › Show Logs* (or *View › Developer › Open Data Folder*). `main.log` is the shell's
   log (info level, rotated at 10 MB), including the engine launcher's start, ready and exit lines.
-  The engine's own stdout/stderr is not written to disk by OpenTac: the last 200 lines are in the
-  setup window's log tail and crash panel, and the engine keeps its own files in
-  `checkout/.gev-logs/`. Secrets are redacted before anything reaches `main.log`.
+  The engine's stdout/stderr goes to `server.log` in the same folder (timestamped, with ready/exit
+  markers, rotated at 10 MB, five archives kept); the last 200 lines are also in the setup window's
+  log tail and crash panel, and the engine keeps its own files in `checkout/.gev-logs/`. Secrets are
+  redacted before anything reaches either log. Set `OPENTAC_LOG_LEVEL` (`error`, `warn`, `info`,
+  `debug`) to change `main.log` verbosity for one run.
 - **Open in Browser**: *Engine › Open in Browser* loads the same local engine URL in your default
   browser, which separates "the engine is broken" from "the Electron window is broken".
 - **DevTools**: *View › Developer › Toggle DevTools*; *GPU status* and *Copy Diagnostics* are in the

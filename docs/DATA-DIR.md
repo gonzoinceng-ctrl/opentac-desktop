@@ -42,13 +42,14 @@ Quit OpenTac before deleting anything.
 | Path | Purpose | Safe to delete? |
 |---|---|---|
 | `main.log` | The shell: state transitions, git and npm operations with durations, updates, permissions, and the engine launcher's lifecycle (spawn, ready line, exit). electron-log, file level `info`, rotated at 10 MB. Secrets redacted. | Yes. |
+| `server.log` | Tee of the engine's stdout and stderr, one line per output line, each prefixed with an ISO timestamp and a stream tag (`2026-11-03T20:00:00.000Z [gev:stdout] ...`), plus one-line `[gev:shell] ready ...` and `[gev:shell] exit ...` markers. Secrets redacted. Rotated at 10 MB to `server.log.1` ... `server.log.5` (oldest dropped). | Yes. |
 
-There is **no `server.log`**. The engine's stdout and stderr go to a 200-line in-memory ring buffer
-(shown in the setup window's log tail and in the CRASHED / ERROR panels) and to a `debug`-level log
-call that the `info`-level file transport drops. `Paths.serverLog` exists in `paths.ts` but nothing
-writes it. The only on-disk engine evidence is therefore what `main.log` records at `info` (start,
-ready line, exit codes, the raw error line of a failed start). The engine's own files are in
-`checkout/.gev-logs/`.
+The same output also goes to a 200-line in-memory ring buffer (shown in the setup window's log tail
+and in the CRASHED / ERROR panels). The engine's own files are in `checkout/.gev-logs/`.
+
+`OPENTAC_LOG_LEVEL` (`error`, `warn`, `info` or `debug`, case-insensitive; anything else is ignored)
+sets the `main.log` file level and the console level for one run. Defaults: file `info`; console
+`debug` in an unpackaged run and `warn` in the packaged app. It does not affect `server.log`.
 
 ## Read-only paths inside the app bundle
 

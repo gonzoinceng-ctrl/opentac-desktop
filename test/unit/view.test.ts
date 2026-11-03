@@ -9,6 +9,7 @@ import {
   VOICE_CAVEAT,
   dirtyFileLines,
   disclosureBlockNote,
+  closeOverlayActions,
   disclosureButtons,
   formatBytes,
   formatCommitCount,
@@ -31,7 +32,7 @@ import {
 
 function disclosure(over: Partial<Disclosure> = {}): Disclosure {
   return {
-    remote: 'https://github.com/OWNER/opentac-engine.git',
+    remote: 'https://github.com/gonzoinceng-ctrl/opentac-engine.git',
     channel: 'stable',
     fromCommit: 'a'.repeat(40),
     toCommit: 'b'.repeat(40),
@@ -284,5 +285,19 @@ describe('static html', () => {
     }
     const missing = [...ids].filter((id) => !index.includes(`id="${id}"`));
     expect(missing).toEqual([]);
+  });
+});
+
+describe('closeOverlayActions', () => {
+  it('closing About runs openPreferences then closePreferences so both overlays end closed', () => {
+    expect(closeOverlayActions({ preferencesOpen: false, aboutOpen: true })).toEqual([
+      'openPreferences',
+      'closePreferences',
+    ]);
+  });
+  it('closing Preferences, or with nothing open, is a single closePreferences', () => {
+    expect(closeOverlayActions({ preferencesOpen: true, aboutOpen: false })).toEqual(['closePreferences']);
+    expect(closeOverlayActions({ preferencesOpen: true, aboutOpen: true })).toEqual(['closePreferences']);
+    expect(closeOverlayActions({ preferencesOpen: false, aboutOpen: false })).toEqual(['closePreferences']);
   });
 });

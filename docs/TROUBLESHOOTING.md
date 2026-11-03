@@ -3,9 +3,10 @@
 Find the symptom (the title the setup window shows, or what you see), read the cause, apply the fix.
 Error codes are the `UserErrorCode` values in `src/main/errors.ts`; the code and the raw error line
 are in `~/Library/Logs/OpenTac/main.log` (*Engine › Show Logs*), which records at `info` level and
-redacts secrets. OpenTac does not write the engine's own stdout/stderr to a file: the last 200 lines
-are shown in the setup window (log tail, CRASHED and ERROR panels), and the engine keeps its own
-files in `C/.gev-logs/`. Where a path is shown, `D` is the data directory
+redacts secrets. The engine's stdout/stderr is teed to `~/Library/Logs/OpenTac/server.log`
+(timestamped, secrets redacted, `[gev:shell]` ready/exit markers, rotated at 10 MB with five archives);
+the last 200 lines are also shown in the setup window (log tail, CRASHED and ERROR panels), and the
+engine keeps its own files in `C/.gev-logs/`. Launch with `OPENTAC_LOG_LEVEL=debug` for more `main.log` detail. Where a path is shown, `D` is the data directory
 (`~/Library/Application Support/OpenTac`) and `C` is `D/checkout`; see [`DATA-DIR.md`](DATA-DIR.md).
 
 If nothing here helps, use *View › Developer › Copy Diagnostics* and file an issue: app problems at

@@ -18,7 +18,7 @@ import {
   systemPreferences,
 } from 'electron';
 
-import type { ShellState, UsbDeviceId, WindowBounds } from '../shared/types.js';
+import type { ShellState, WindowBounds } from '../shared/types.js';
 import { createAiGateway } from './aiGateway.js';
 import { createCheckoutManager } from './checkout.js';
 import { createController, resolveDevOverrides } from './controller.js';
@@ -26,13 +26,14 @@ import type { ShellController } from './controller.js';
 import { createGitRunner } from './git.js';
 import { createInstallManager } from './install.js';
 import { registerIpc } from './ipc.js';
-import { createElectronLogSink, createLogger } from './logger.js';
-import type { Logger } from './logger.js';
+import { createElectronLogSink, createLogger, createServerLogWriter, resolveLogLevels } from './logger.js';
+import type { Logger, ServerLogWriter } from './logger.js';
 import { buildMenu } from './menu.js';
 import { ensureDataDirs, resolvePaths } from './paths.js';
 import type { Paths } from './paths.js';
 import { installPermissionHandlers } from './permissions.js';
-import { isWithinDir } from './policy.js';
+import { isWithinDir, sameUsbIdentity, toRememberedUsb } from './policy.js';
+import type { RememberedUsbDevice } from './policy.js';
 import { createRingBuffer } from './ringBuffer.js';
 import { createSecrets } from './secrets.js';
 import { createServerManager } from './server.js';
@@ -61,7 +62,7 @@ if (!app.isPackaged && (process.env['OPENTAC_DATA_DIR'] ?? '') !== '') {
 const URLS = {
   upstreamReadme: 'https://github.com/bilawalsidhu/gods-eye-view#readme',
   upstreamIssues: 'https://github.com/bilawalsidhu/gods-eye-view/issues',
-  appIssues: 'https://github.com/OWNER/opentac/issues',
+  appIssues: 'https://github.com/gonzoinceng-ctrl/opentac-desktop/issues',
   site: 'https://opentac.icu',
   providerHelp: 'https://github.com/bilawalsidhu/gods-eye-view#readme',
 } as const;
@@ -92,6 +93,7 @@ let logRef: Logger | null = null;
 let focusWindow: (() => void) | null = null;
 let quitting = false;
 let shutdownDone = false;
+let serverLogRef: ServerLogWriter | null = null;
 
 /** Stops the engine (idempotent) with the 8 s cap; never rejects. */
 async function shutdownWithCap(): Promise<void> {
@@ -112,6 +114,12 @@ async function shutdownWithCap(): Promise<void> {
     }
   }
   shutdownDone = true;
+  // After the engine is down so its final lines (and the exit marker) are flushed to server.log.
+  try {
+    await serverLogRef?.close();
+  } catch (err) {
+    logRef?.error(`closing server.log failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -200,7 +208,7 @@ async function boot(): Promise<void> {
   const paths = applyDevOverrides(resolvedPaths, process.env);
   ensureDataDirs(paths);
 
-  const sink = await createElectronLogSink();
+  const sink = await createElectronLogSink(resolveLogLevels(process.env, app.isPackaged));
   // electron-log picks its own default location; pin the file to Paths.mainLog so that Copy
   // Diagnostics, "Show Logs" and an OPENTAC_DATA_DIR run all agree on one place.
   const electronLog = (await import('electron-log/main.js')).default;
@@ -215,7 +223,8 @@ async function boot(): Promise<void> {
   // Those live here and are overlaid onto every save, so neither side can overwrite the other.
   const initialState: ShellState = await loadState(paths.stateFile, paths.stateBackupFile, log);
   let windowBounds: WindowBounds | null = initialState.mainWindowBounds;
-  let usbDevices: UsbDeviceId[] = initialState.usbDevices;
+  // Entries keep productName in memory (state.ts cannot persist it yet; see DECISIONS).
+  let usbDevices: RememberedUsbDevice[] = initialState.usbDevices;
   let saveChain: Promise<void> = Promise.resolve();
   const overlay = (s: ShellState): ShellState => ({ ...s, mainWindowBounds: windowBounds, usbDevices });
   const persistState = (s: ShellState): Promise<void> => {
@@ -238,6 +247,18 @@ async function boot(): Promise<void> {
     checkoutDir: paths.checkoutDir,
     log: log.scope('server'),
     ring,
+  });
+  // Tee of the engine's stdout/stderr plus ready/exit markers (brief 03 section 4.9); redacted, 10 MB x 5.
+  const serverLog = createServerLogWriter({ file: paths.serverLog });
+  serverLogRef = serverLog;
+  server.onEvent((e) => {
+    if (e.type === 'line') serverLog.write(`[gev:${e.stream}] ${e.line}`);
+    else if (e.type === 'ready') serverLog.write(`[gev:shell] ready url=${e.url} port=${e.port} pid=${e.pid}`);
+    else {
+      serverLog.write(
+        `[gev:shell] exit code=${e.code ?? 'null'} signal=${e.signal ?? 'null'} expected=${String(e.expected)}`,
+      );
+    }
   });
   const secrets = createSecrets({
     file: join(paths.dataDir, 'secrets.json'),
@@ -325,15 +346,8 @@ async function boot(): Promise<void> {
     engineOrigin: () => ui.engineOrigin(),
     rememberedUsb: () => usbDevices,
     rememberUsb: (d) => {
-      const entry: UsbDeviceId = {
-        vendorId: d.vendorId,
-        productId: d.productId,
-        ...(d.serialNumber !== undefined ? { serialNumber: d.serialNumber } : {}),
-      };
-      const known = usbDevices.some(
-        (u) => u.vendorId === entry.vendorId && u.productId === entry.productId && u.serialNumber === entry.serialNumber,
-      );
-      if (known) return;
+      const entry = toRememberedUsb(d);
+      if (usbDevices.some((u) => sameUsbIdentity(u, entry))) return;
       usbDevices = [...usbDevices, entry];
       persistState(controller.state()).catch((err: unknown) => log.warn(`could not save the USB device: ${String(err)}`));
     },

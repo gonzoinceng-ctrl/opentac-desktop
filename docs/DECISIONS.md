@@ -123,3 +123,31 @@ Built and proven locally: 12 contract checks pass against upstream HEAD `48146f8
 - `www.opentac.icu → opentac.icu` cannot be expressed in Cloudflare Pages' `_redirects` (path rules only); it is a Cloudflare Redirect Rule on the zone, documented in `site/README.md`.
 - There is no `server.log` yet: engine output lives in the 200-line in-memory ring (shown in the setup window) and in `checkout/.gev-logs/`; `main.log` records spawn, ready and exit lines. A rotated, redacted `server.log` tee (brief 03 §4.9) and an `OPENTAC_LOG_LEVEL` override are tracked as shell-layer follow-ups.
 - Repo root carries an MIT `LICENSE` for OpenTac's own code (Simon Tucker, 2026) with a pointer to the upstream and data-licence situation in `THIRD_PARTY_NOTICES.md`.
+
+## 2026-11-03 — USB productName persistence limitation
+
+The shell remembers `productName` for each WebUSB pick in memory and matches on it (dual-channel RTL-SDR boards share vendor, product and serial), so within a session picking one channel does not grant its sibling. `UsbDeviceId` in `src/shared/types.ts` and `readUsbDevices` in `src/main/state.ts` have no `productName` field, so the name is dropped when `state.json` is loaded and the match falls back to vendor, product and serial after a restart. Follow-up for the state owner: add `productName?: string` to `UsbDeviceId` and read it in `readUsbDevices`; no change is needed in the electron layer.
+
+## 2026-11-03 — Shell layer implementation notes (controller, windows, IPC, renderer, e2e)
+
+Final verification: build and both typechecks clean; 588 unit/integration tests; 5/5 Playwright `_electron` tests (boot to RUNNING, setup window hidden, external links suppressed, menu-driven engine update disclosure, clean quit); unsigned `npm run pack` contains npm-cli.js, an arm64 git and the launcher; a 20 s real launch against the fixture mirror reaches RUNNING and shuts down cleanly. Deviations from `docs/SHELL-DESIGN.md`:
+
+1. Two extra transitions: `INSTALLING → ROLLING_BACK` (a failed `npm ci` after the checkout moved must roll back) and `RESTARTING → INSTALLING` (Reinstall Dependencies from a running engine). Every edge into `ROLLING_BACK` is guarded by the presence of `rollbackCommit`.
+2. `OPENTAC_FAIL_START_ONCE` is consumed by the first `server.start()` made while a rollback marker exists (a post-update start, or a boot resuming an interrupted update), then stripped; a plain boot never consumes it. A literal "first start ever" would have made the flag useless for the rollback drill.
+3. A user `rollback` action from ERROR or CRASHED passes through STARTING then ROLLING_BACK (no direct ERROR → ROLLING_BACK edge).
+4. After a rollback caused by a failed update, `skippedCommit` is set to the attempted commit so background checks do not re-announce it; interactive checks and `security` releases still do.
+5. Any change of `state.ai.provider` restarts the engine (RESTARTING) with a fresh gateway and token; if it happens outside RUNNING it is applied on the next return to RUNNING.
+6. All automatic checks (launch, 6 h, resume, focus) are gated on `updateCheckOnLaunch` and rate-limited by `lastUpdateCheck` with a 60 s tolerance; `lastUpdateCheck` is not stamped on an offline result.
+7. A gateway that fails to start degrades to "no gateway" with a notice rather than ERROR.
+8. The < 2 GB disk check is enforced only when a clone or install is actually needed; otherwise it is logged.
+9. A checkout with `installedCommit` null (clone that never installed) is re-checked-out to the channel target at boot, so a retry after a half-done first run works.
+10. `resetCheckout` (ERROR only) backs up the engine `.env` to `<dataDir>/env.backup` (0600), deletes and re-clones, restores `.env`, removes the backup.
+11. `runInstall` clears `installedLockHash`/`installedNodeVersion` before `npm ci`, so a failed or aborted install leaves `needsInstall()` true and a rollback reinstalls.
+12. TAG_DRIFT during a check is surfaced as an ERROR that can be retried, with the engine left running (the tree is untouched).
+13. A crash while CHECKING or DISCLOSING is handled like a crash while RUNNING.
+14. Browser-state note: `OPENTAC_E2E_NO_EXTERNAL=1` makes `shell.openExternal` log instead of open (unpackaged only); used by the e2e suite.
+15. Renderer: closing About sends `openPreferences` then `closePreferences` (the controller clears `aboutOpen` on `openPreferences`); the controller now also clears `aboutOpen` on `closePreferences` so either path works.
+
+## 2026-11-03 — server.log tee and OPENTAC_LOG_LEVEL implemented
+
+The two follow-ups recorded above ("There is no `server.log` yet") are done, so that note is superseded. `src/main/logger.ts` gains `createServerLogWriter` (node:fs append stream; every line passes through `redact()` and gets an ISO timestamp; at 10 MB it rotates `server.log` to `server.log.1` ... `server.log.5`, dropping the oldest). `src/main/index.ts` subscribes to `ServerManager.onEvent` and writes every engine `line` event as `[gev:stdout|stderr] ...`, plus `[gev:shell] ready ...` and `[gev:shell] exit ...` markers, to `Paths.serverLog`, and closes the writer after `controller.shutdown()` in the quit path. `OPENTAC_LOG_LEVEL` (`error|warn|info|debug`, case-insensitive, invalid values ignored) sets both the `main.log` file level and the console level via the pure `resolveLogLevels`; defaults are file `info`, console `debug` unpackaged and `warn` packaged. It does not affect `server.log`, which always records the engine's full output.

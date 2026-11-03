@@ -28,10 +28,12 @@ unticked in the repository; tick them in a copy and attach it to the release.
   profile, `~/Library/Logs/OpenTac/` and the single-instance lock. When testing the packaged app,
   **quit the real install first**, or run the whole script from a separate macOS user account.
 - **Logs.** `tail -f ~/Library/Logs/OpenTac/main.log` (packaged; for an unpackaged run with
-  `OPENTAC_DATA_DIR`, `$OPENTAC_DATA_DIR/logs/main.log`). *Engine › Show Logs* opens the folder. There
-  is no `server.log`: the engine's output is only in the 200-line in-memory buffer (setup window log
-  tail, CRASHED/ERROR panels) and in `C/.gev-logs/`; `main.log` (info level) records the launcher's
-  spawn, ready line and exit.
+  `OPENTAC_DATA_DIR`, `$OPENTAC_DATA_DIR/logs/main.log`). *Engine › Show Logs* opens the folder. The
+  engine's stdout/stderr is also teed to `server.log` in the same folder (timestamped, redacted,
+  with `[gev:shell]` ready/exit markers); the last 200 lines are in the setup window log tail and
+  CRASHED/ERROR panels, and the engine's own files are in `C/.gev-logs/`; `main.log` (info level)
+  records the launcher's spawn, ready line and exit. `OPENTAC_LOG_LEVEL=debug` raises `main.log`
+  verbosity for one run.
 - **Data layout.** See `docs/DATA-DIR.md`. `D` below means the data directory, `C` means `D/checkout`.
 - **Bundled git** (for staging a stale checkout):
   `GIT=/Applications/OpenTac.app/Contents/Resources/app.asar.unpacked/node_modules/dugite/git/bin/git`.
@@ -175,7 +177,7 @@ Mark **not executed** without an RTL-SDR dongle.
 
 - [ ] **12.1 Two instances.** With OpenTac running, `open -n /Applications/OpenTac.app`. *Expected:* no second window or second engine; the first window is focused. `pgrep -fl opentac-start` shows one process.
 - [ ] **12.2 Memory bound.** Idle at the globe for 10 minutes on an Apple Silicon Mac. Sum all OpenTac and `node` processes in Activity Monitor. *Expected:* under about 1.5 GB total (a sanity bound, not an SLA).
-- [ ] **12.3 No unbounded log growth.** After a long session. *Expected:* `main.log` rotates at about 10 MB (electron-log `maxSize`); the in-memory ring buffer stays bounded (the crash panel shows 200 lines); no engine output file grows in `~/Library/Logs/OpenTac/` (there is no `server.log`).
+- [ ] **12.3 No unbounded log growth.** After a long session. *Expected:* `main.log` rotates at about 10 MB (electron-log `maxSize`); the in-memory ring buffer stays bounded (the crash panel shows 200 lines); `server.log` rotates at 10 MB and keeps five archives (`server.log.1` ... `server.log.5`), so the logs folder stays bounded at roughly 120 MB.
 - [ ] **12.4 Binds loopback.** Repeat 1.6 after long use and with the AI gateway active. *Expected:* loopback only.
 
 ## 13. Gatekeeper and signing (fresh Mac or fresh user account)

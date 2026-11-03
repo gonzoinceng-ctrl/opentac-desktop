@@ -37,7 +37,7 @@ import type {
   UserError,
   Versions,
 } from '../shared/ipc.js';
-import type { ShellState } from '../shared/types.js';
+import type { AiProvider, ShellState } from '../shared/types.js';
 import type { AiGateway, AiGatewayConfig } from './aiGateway.js';
 import type { CheckoutManager, ResolvedTarget } from './checkout.js';
 import type { ControllerApi, SecretsApi, ShellUi, ShellUpdaterApi } from './contracts.js';
@@ -75,6 +75,8 @@ export const LAUNCH_CHECK_DELAY_MS = 20_000;
 export const SHELL_CHECK_DELAY_MS = 30_000;
 /** Interval of in-session engine update checks, and the rate limit between any two checks. */
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** After an offline result, background checks (focus, resume, interval) wait this long. */
+export const OFFLINE_BACKOFF_MS = 15 * 60 * 1000;
 /** A check this close to the limit still counts as due (the interval fires just under 6 h). */
 export const CHECK_RATE_TOLERANCE_MS = 60_000;
 /** Two automatic crash restarts must be at least this far apart. */
@@ -404,7 +406,12 @@ export function createController(deps: ControllerDeps): ShellController {
   let saveQueue: Promise<void> = Promise.resolve();
   let lastAutoRestartAt: number | null = null;
   let installedSinceStart = false;
-  let providerRestartPending = false;
+  /** Provider the running (or last started) engine was launched with; null before the first launch. */
+  let launchedProvider: AiProvider | null = null;
+  /** Unexpected exit seen while the phase was CHECKING or DISCLOSING; handled when RUNNING resumes. */
+  let missedCrash: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+  /** In-memory back-off: no background check before this time after an offline result. */
+  let offlineUntil = 0;
   let updateInFlight: string | null = null;
   let pendingFailOnce = deps.env['OPENTAC_FAIL_START_ONCE'] === '1';
 
@@ -758,6 +765,9 @@ export function createController(deps: ControllerDeps): ShellController {
   async function runInstall(): Promise<void> {
     ring.clear();
     setProgress('Installing dependencies…');
+    // `npm ci` wipes node_modules first. Forget the recorded install so a failure or abort
+    // leaves needsInstall() true and a rollback reinstalls instead of starting on a broken tree.
+    await persist({ installedLockHash: null, installedNodeVersion: null });
     const result = await install.install(
       (p) => {
         ring.push(p.line);
@@ -806,6 +816,7 @@ export function createController(deps: ControllerDeps): ShellController {
   async function launchServer(): Promise<ServerHandle> {
     setProgress("Starting God's Eye View…");
     const port = await choosePort();
+    launchedProvider = state.ai.provider;
     const gw = await prepareGateway();
     const extraEnv: Record<string, string> = {};
     if (gw !== null) extraEnv['OPENTAC_AI_GATEWAY_TOKEN'] = gw.token;
@@ -846,6 +857,7 @@ export function createController(deps: ControllerDeps): ShellController {
 
   function enterRunning(handle: ServerHandle, reason: string): void {
     runningPort = handle.port;
+    missedCrash = null;
     transition('RUNNING', reason);
     ui.setEngineOrigin(engineOrigin(handle.port));
     if (ui.hasMain() && mainUrl === handle.url) {
@@ -899,6 +911,7 @@ export function createController(deps: ControllerDeps): ShellController {
     });
     installedSinceStart = false;
     enterRunning(handle, reason);
+    await settleRunning();
     return true;
   }
 
@@ -927,6 +940,9 @@ export function createController(deps: ControllerDeps): ShellController {
   async function runBoot(): Promise<void> {
     ui.showSetup();
     logDevOverrides();
+    // A retry can arrive while an engine from before the failure is still running
+    // (for example after a tag-drift error raised during an update check).
+    if (server.isRunning()) await stopServer();
 
     let free: number | null = null;
     try {
@@ -942,10 +958,11 @@ export function createController(deps: ControllerDeps): ShellController {
         detail: `${free === null ? '?' : Math.floor(free / 1024 ** 2)} MB free; at least ${MIN_FREE_BYTES / 1024 ** 2} MB needed.`,
       });
 
+    if (lowDisk) return fail(diskError(), 'disk');
+
     const exists = await checkout.exists();
     let mustInstall = false;
     if (!exists) {
-      if (lowDisk) return fail(diskError(), 'disk');
       transition('CLONING', 'no engine checkout yet');
       if ((await guarded('clone', cloneAndCheckout)) === null) return;
       mustInstall = true;
@@ -966,7 +983,6 @@ export function createController(deps: ControllerDeps): ShellController {
     }
 
     if (mustInstall) {
-      if (lowDisk) return fail(diskError(), 'disk');
       transition('INSTALLING', exists ? 'dependencies need installing' : 'fresh checkout');
       if ((await guarded('install', runInstall)) === null) return;
       transition('STARTING', 'install finished');
@@ -981,7 +997,15 @@ export function createController(deps: ControllerDeps): ShellController {
   // -------------------------------------------------------------------------
 
   async function handleCrash(exit: { code: number | null; signal: NodeJS.Signals | null }): Promise<void> {
-    if (shuttingDown || machine.phase() !== 'RUNNING') return;
+    if (shuttingDown) return;
+    const phaseNow = machine.phase();
+    if (phaseNow === 'CHECKING' || phaseNow === 'DISCLOSING') {
+      log.error(`the engine server exited while ${phaseNow}; handling it when the app returns to running`);
+      missedCrash = exit;
+      return;
+    }
+    if (phaseNow !== 'RUNNING') return;
+    missedCrash = null;
     log.error(`the engine server exited unexpectedly (code=${String(exit.code)}, signal=${String(exit.signal)})`);
     runningPort = null;
     error = crashUserError(exit, ring.tail(1)[0] ?? null);
@@ -1025,6 +1049,7 @@ export function createController(deps: ControllerDeps): ShellController {
       }
       transition('STARTING', why);
       ui.showSetup();
+      await stopServer();
     } else {
       log.info(`restartServer ignored in phase ${from}`);
       return;
@@ -1133,6 +1158,10 @@ export function createController(deps: ControllerDeps): ShellController {
       log.debug(`${why} update check skipped: automatic checks are off`);
       return;
     }
+    if (now() < offlineUntil) {
+      log.debug(`${why} update check skipped: GitHub was unreachable a moment ago`);
+      return;
+    }
     if (!isAutomaticCheckDue(state.lastUpdateCheck, now())) {
       log.debug(`${why} update check skipped: last check was ${String(state.lastUpdateCheck)}`);
       return;
@@ -1159,6 +1188,7 @@ export function createController(deps: ControllerDeps): ShellController {
         ui.showSetup();
         addNotice("The check for engine updates didn't work. The log has the details.");
       }
+      await settleRunning();
       return;
     }
     if (shuttingDown) return;
@@ -1176,6 +1206,8 @@ export function createController(deps: ControllerDeps): ShellController {
         } else {
           log.info("update check: couldn't reach GitHub");
         }
+        offlineUntil = now() + OFFLINE_BACKOFF_MS;
+        await settleRunning();
         return;
       case 'tag-drift':
         fail(new GitError('TAG_DRIFT', 'A release tag on the remote changed.', result.detail), 'fetch');
@@ -1194,6 +1226,7 @@ export function createController(deps: ControllerDeps): ShellController {
         const d = result.disclosure;
         if (isQuietlySkipped(state.skippedCommit, d.toCommit, interactive, d.severity)) {
           transition('RUNNING', 'skipped update needs a newer app');
+          await settleRunning();
           return;
         }
         pending = { target: null, disclosure: d };
@@ -1219,8 +1252,15 @@ export function createController(deps: ControllerDeps): ShellController {
 
   /** After returning to RUNNING without a restart: apply a provider change that waited. */
   async function settleRunning(): Promise<void> {
-    if (providerRestartPending && machine.phase() === 'RUNNING') {
-      providerRestartPending = false;
+    if (shuttingDown || machine.phase() !== 'RUNNING') return;
+    if (!server.isRunning()) {
+      // The engine died while a check or a disclosure was open; route it through the crash path.
+      const exit = missedCrash ?? { code: null, signal: null };
+      missedCrash = null;
+      await handleCrash(exit);
+      return;
+    }
+    if (launchedProvider !== null && launchedProvider !== state.ai.provider) {
       await restartEngine('summary provider changed');
     }
   }
@@ -1397,8 +1437,10 @@ export function createController(deps: ControllerDeps): ShellController {
         emitNow();
         return;
       case 'closePreferences':
+        // Closes whichever overlay is open (Preferences or About) so one action serves both panels.
         preferencesOpen = false;
-        if (machine.phase() === 'RUNNING' && !aboutOpen) ui.hideSetup();
+        aboutOpen = false;
+        if (machine.phase() === 'RUNNING') ui.hideSetup();
         emitNow();
         return;
       case 'showLogs':
@@ -1438,11 +1480,9 @@ export function createController(deps: ControllerDeps): ShellController {
     emitNow();
     if (payload.provider === previous) return;
     log.info(`summary provider changed: ${previous} -> ${payload.provider}`);
-    if (machine.phase() === 'RUNNING') {
-      await restartEngine('summary provider changed');
-    } else {
-      providerRestartPending = true;
-    }
+    // Outside RUNNING the change is picked up by the next launch, or by settleRunning()
+    // when the app returns to RUNNING with an engine launched on the old provider.
+    if (machine.phase() === 'RUNNING') await restartEngine('summary provider changed');
   }
 
   async function setAiKey(payload: SetAiKeyPayload): Promise<void> {

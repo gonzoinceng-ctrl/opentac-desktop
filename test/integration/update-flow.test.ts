@@ -142,6 +142,28 @@ describe('engine update', () => {
     expect(c.controller.phase()).toBe('DISCLOSING');
   });
 
+  it('a failed npm ci during the update rolls back and reinstalls the previous dependencies', async () => {
+    const c = await start();
+    const { c2, c4 } = c.fixture.commits;
+    await c.fixture.moveStable(c4);
+    await c.controller.action('checkForUpdates');
+    expect(c.controller.phase()).toBe('DISCLOSING');
+    // The next npm call wipes node_modules and fails.
+    await writeFile(join(c.fixture.root, 'fail-npm-once'), '');
+
+    await c.controller.action('confirmUpdate');
+    expect(c.controller.phase()).toBe('RUNNING');
+    expect(c.phases.slice(-6)).toEqual(['UPDATING', 'INSTALLING', 'ROLLING_BACK', 'INSTALLING', 'STARTING', 'RUNNING']);
+    expect(await headOf(c)).toBe(c2);
+    const s = c.controller.state();
+    expect(s.installedCommit).toBe(c2);
+    expect(s.rollbackCommit).toBeNull();
+    expect(s.installedLockHash).toMatch(/^[0-9a-f]{64}$/);
+    // node_modules was rebuilt from the previous lockfile.
+    expect(await readFile(join(c.paths.nodeModulesDir, '.fake-install'), 'utf8')).toContain('1.0.0');
+    expect(await fetchStatus(c.ui.mainUrl as string)).toBe(200);
+  });
+
   it('a dirty tracked file is reported and resetAndUpdate preserves .env', async () => {
     const c = await start();
     const { c4 } = c.fixture.commits;

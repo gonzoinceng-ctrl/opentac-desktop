@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   decideNavigation,
@@ -5,6 +6,8 @@ import {
   isWithinDir,
   matchUsbDevice,
   originOf,
+  sameUsbIdentity,
+  toRememberedUsb,
   validateBounds,
 } from '../../src/main/policy.js';
 
@@ -203,5 +206,36 @@ describe('validateBounds', () => {
       width: 1440,
       height: 900,
     });
+  });
+});
+
+describe('remembered USB identity', () => {
+  const chanA = { vendorId: 0x0bda, productId: 0x2838, serialNumber: '00000001', productName: 'RTL2838UHIDIR A' };
+  const chanB = { ...chanA, productName: 'RTL2838UHIDIR B' };
+
+  it('keeps productName and serial in the remembered entry', () => {
+    expect(toRememberedUsb({ ...chanA })).toEqual(chanA);
+    expect(toRememberedUsb({ vendorId: 1, productId: 2, serialNumber: '', productName: null })).toEqual({
+      vendorId: 1,
+      productId: 2,
+    });
+  });
+  it('a pick of one channel does not grant a sibling that shares vendor, product and serial', () => {
+    const remembered = toRememberedUsb(chanA);
+    expect(matchUsbDevice(remembered, chanA)).toBe(true);
+    expect(matchUsbDevice(remembered, chanB)).toBe(false);
+  });
+  it('treats entries with different product names as different identities', () => {
+    expect(sameUsbIdentity(toRememberedUsb(chanA), toRememberedUsb(chanB))).toBe(false);
+    expect(sameUsbIdentity(toRememberedUsb(chanA), toRememberedUsb({ ...chanA }))).toBe(true);
+  });
+});
+
+describe('shell URLs', () => {
+  it('index.ts ships no placeholder repository owner and points at the app repo', () => {
+    const src = readFileSync(new URL('../../src/main/index.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/\bOWNER\b/);
+    expect(src).toContain('https://github.com/gonzoinceng-ctrl/opentac-desktop/issues');
+    expect(src).not.toContain('gonzoinceng-ctrl/opentac/');
   });
 });

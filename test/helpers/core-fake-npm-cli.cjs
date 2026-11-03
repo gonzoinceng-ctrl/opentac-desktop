@@ -7,6 +7,14 @@ if (!fs.existsSync('package-lock.json')) {
   process.exit(1);
 }
 fs.rmSync('node_modules', { recursive: true, force: true });
+// Failure hook: when <TMPDIR>/fail-npm-once exists, behave like an `npm ci` that died after
+// wiping node_modules (the flag is consumed so the next call succeeds).
+const failFlag = require('node:path').join(process.env.TMPDIR || '', 'fail-npm-once');
+if (process.env.TMPDIR && fs.existsSync(failFlag)) {
+  fs.rmSync(failFlag, { force: true });
+  console.error('npm error code E500');
+  process.exit(1);
+}
 fs.mkdirSync('node_modules', { recursive: true });
 fs.writeFileSync('node_modules/.fake-install', fs.readFileSync('package-lock.json'));
 // Like a real node_modules, ignore everything inside it (the fixture repo has no .gitignore entry for it).
