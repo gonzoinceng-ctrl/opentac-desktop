@@ -42,7 +42,6 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
-  ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   APP_REPO: OWNER/opentac-desktop
 
@@ -50,7 +49,11 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Environment secret: only jobs that name this environment, and only on the opentac-ci
+    # branch, can read ENGINE_PUSH_TOKEN. Pushes of third-party refs can never reach it.
+    environment: engine-push
     env:
+      ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
       FORCE: ${{ inputs.force }}
       INPUT_SHA: ${{ inputs.sha }}
       SEVERITY: ${{ inputs.severity }}
@@ -255,35 +258,54 @@ jobs:
           git tag -a "$tag" "$SHA" -F ../tagmsg.txt
           git push origin "refs/tags/${tag}"
 
-          gh issue comment "$ISSUE" --body "Promoted: \`stable\` is now \`${SHA:0:7}\`, tagged \`${tag}\` (canary ${canary_days} day(s), severity ${SEVERITY}). Release notes are in RELEASES.md." > /dev/null
-          gh issue close "$ISSUE" --reason completed > /dev/null
-
-          # RELEASES.md entry on the default branch.
-          old=""
-          case "$RANGE" in *..*) old=${RANGE%%..*} ;; esac
-          if [ -n "$old" ] && git cat-file -e "${old}^{commit}" 2> /dev/null; then
-            git log --format='%h%x09%s' "${old}..${SHA}" > ../log.txt
-            git diff --stat=100,60 "$old" "$SHA" | tail -n 40 > ../diffstat.txt
-            if git diff --quiet "$old" "$SHA" -- package-lock.json; then deps=no; else deps=yes; fi
-            range_short="${old:0:7}..${SHA:0:7}"
-          else
-            git log --max-count=100 --format='%h%x09%s' "$SHA" > ../log.txt
-            : > ../diffstat.txt
-            deps=yes
-            range_short="${SHA:0:7} (first promotion, last 100 commits)"
-          fi
-          node ../ci/canary.mjs release-entry --tag "$tag" --date "$(date -u +%F)" --range "$range_short" \
-            --log ../log.txt --diffstat ../diffstat.txt --deps "$deps" --upstream-tag "$UPSTREAM_TAG" \
-            --gate-run "$GATE_RUN" --canary-days "$canary_days" --min-shell "$MIN_SHELL" --severity "$SEVERITY" > ../entry.md
-          node ../ci/canary.mjs prepend-release --file ../ci/RELEASES.md --entry ../entry.md
-          git -C ../ci add RELEASES.md
-          git -C ../ci commit --quiet -m "releases: ${tag} (${SHA:0:7})"
-          push_default_branch ../ci "$DEFAULT_BRANCH"
-
-          # Tell the app repo (it also polls on a schedule, so a failed dispatch is not fatal).
+          # Tell the app repo right after the tag push (payload is only tag + sha; the app also polls,
+          # so a failed dispatch is not fatal).
           GH_TOKEN="$ENGINE_PUSH_TOKEN" gh api "repos/${APP_REPO}/dispatches" \
             -f event_type=engine-promoted -f "client_payload[tag]=${tag}" -f "client_payload[sha]=${SHA}" > /dev/null \
             || echo "::warning title=Dispatch failed::could not notify ${APP_REPO}; its scheduled poll will pick up ${tag}"
+
+          # Non-fatal and ordered after the dispatch: stable and the tag are already pushed, so a lost
+          # race on the default branch must not skip the app notification or leave the canary open.
+          deps=unknown
+          range_short="${SHA:0:7}"
+          # (errexit is ignored inside a subshell used as an `if` condition, so switch it off around
+          # a subshell that sets its own `set -e`.)
+          set +e
+          (
+            set -e
+            old=""
+            case "$RANGE" in *..*) old=${RANGE%%..*} ;; esac
+            if [ -n "$old" ] && git cat-file -e "${old}^{commit}" 2> /dev/null; then
+              git log --format='%h%x09%s' "${old}..${SHA}" > ../log.txt
+              git diff --stat=100,60 "$old" "$SHA" | tail -n 40 > ../diffstat.txt
+              if git diff --quiet "$old" "$SHA" -- package-lock.json; then deps=no; else deps=yes; fi
+              range_short="${old:0:7}..${SHA:0:7}"
+            else
+              git log --max-count=100 --format='%h%x09%s' "$SHA" > ../log.txt
+              : > ../diffstat.txt
+              deps=yes
+              range_short="${SHA:0:7} (first promotion, last 100 commits)"
+            fi
+            printf 'deps=%q\nrange_short=%q\n' "$deps" "$range_short" > ../relvars.sh
+            node ../ci/canary.mjs release-entry --tag "$tag" --date "$(date -u +%F)" --range "$range_short" \
+              --log ../log.txt --diffstat ../diffstat.txt --deps "$deps" --upstream-tag "$UPSTREAM_TAG" \
+              --gate-run "$GATE_RUN" --canary-days "$canary_days" --min-shell "$MIN_SHELL" --severity "$SEVERITY" > ../entry.md
+            node ../ci/canary.mjs prepend-release --file ../ci/RELEASES.md --entry ../entry.md
+            git -C ../ci add RELEASES.md
+            git -C ../ci commit --quiet -m "releases: ${tag} (${SHA:0:7})"
+            push_default_branch ../ci "$DEFAULT_BRANCH"
+          )
+          rel_rc=$?
+          set -e
+          # shellcheck disable=SC1091
+          [ ! -f ../relvars.sh ] || source ../relvars.sh
+          if [ "$rel_rc" -ne 0 ]; then
+            echo "::warning title=RELEASES.md not updated::could not commit the RELEASES.md entry for ${tag}; add it by hand"
+          fi
+
+          # Close the canary LAST: if anything above aborts, the next run still sees the open canary.
+          gh issue comment "$ISSUE" --body "Promoted: \`stable\` is now \`${SHA:0:7}\`, tagged \`${tag}\` (canary ${canary_days} day(s), severity ${SEVERITY}). Release notes are in RELEASES.md." > /dev/null
+          gh issue close "$ISSUE" --reason completed > /dev/null
 
           {
             echo "### Promoted \`${tag}\`"

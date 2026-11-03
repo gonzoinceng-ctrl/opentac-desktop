@@ -14,6 +14,7 @@
 #
 # Usage:
 #   OWNER=gonzoinceng-ctrl APP_REPO=opentac-desktop ./bootstrap.sh [--seed <upstream-sha>] [--dry-run]
+#                                                                  [--trust-upstream-workflows]
 #
 # Environment:
 #   OWNER      GitHub user or org that will own the mirror   (default: gonzoinceng-ctrl)
@@ -46,6 +47,7 @@ SLUG="${OWNER}/${ENGINE_REPO}"
 
 SEED=""
 DRY_RUN=false
+TRUST_WORKFLOWS=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --seed)
@@ -54,6 +56,10 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=true
+      shift
+      ;;
+    --trust-upstream-workflows)
+      TRUST_WORKFLOWS=true
       shift
       ;;
     -h | --help)
@@ -165,6 +171,33 @@ fi
 say "3/8 Make ${CI_BRANCH} the default branch"
 run gh api --silent -X PATCH "repos/${SLUG}" -f "default_branch=${CI_BRANCH}"
 
+# The push token lives in an ENVIRONMENT secret, available only to jobs that name the
+# `engine-push` environment AND run on ${CI_BRANCH}. Workflows from upstream commits pushed
+# to other refs can therefore never read it. Best effort; manual steps are printed on failure.
+ENV_NAME="engine-push"
+manual_env() {
+  cat << MANUAL
+Could not configure the environment through the API. Create it by hand:
+  https://github.com/${SLUG}/settings/environments/new
+    Name:                ${ENV_NAME}
+    Deployment branches: Selected branches > add ${CI_BRANCH}
+MANUAL
+}
+if [ "$DRY_RUN" = true ]; then
+  echo "[dry-run] would create environment ${ENV_NAME} restricted to ${CI_BRANCH}"
+elif printf '%s' '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' \
+  | gh api -X PUT "repos/${SLUG}/environments/${ENV_NAME}" --input - > /dev/null 2>&1; then
+  if gh api "repos/${SLUG}/environments/${ENV_NAME}/deployment-branch-policies" --jq '.branch_policies[].name' 2> /dev/null | grep -qx "$CI_BRANCH"; then
+    echo "environment ${ENV_NAME} already restricted to ${CI_BRANCH}"
+  elif gh api -X POST "repos/${SLUG}/environments/${ENV_NAME}/deployment-branch-policies" -f "name=${CI_BRANCH}" -f type=branch > /dev/null 2>&1; then
+    echo "environment ${ENV_NAME} created, restricted to ${CI_BRANCH}"
+  else
+    manual_env
+  fi
+else
+  manual_env
+fi
+
 # --------------------------------------------------------------------------
 say "4/8 Mirror upstream main as upstream-main, and upstream v* tags by name"
 ENG="${WORK}/engine.git"
@@ -180,6 +213,18 @@ for tag in "${TAGS[@]}"; do
   git -C "$ENG" fetch --quiet --no-tags "$UPSTREAM_URL" "+refs/tags/${tag}:refs/tags/${tag}"
 done
 echo "upstream-main at $(git -C "$ENG" rev-parse --short upstream-main), ${#TAGS[@]} v* tag(s): ${TAGS[*]}"
+# Pushing upstream-authored commits can fire upstream's own workflows here. Refuse if any of
+# them has a trigger that could match a ref we create (the engine-push environment secret is
+# not set yet and is branch-restricted, but do not rely on that alone).
+SCAN_ARGS=(--ref refs/heads/upstream-main)
+for tag in "${TAGS[@]}"; do SCAN_ARGS+=(--ref "refs/tags/${tag}"); done
+if ! node "${HERE}/ci/trigger-scan.mjs" --repo "$ENG" "${SCAN_ARGS[@]}"; then
+  if [ "$TRUST_WORKFLOWS" = true ]; then
+    echo "warning: continuing because --trust-upstream-workflows was given" >&2
+  else
+    die "upstream workflows could run on mirror refs (see above). Review them, then re-run with --trust-upstream-workflows"
+  fi
+fi
 # upstream-main: a plain push can only fast-forward.
 run git -C "$ENG" push origin 'refs/heads/upstream-main:refs/heads/upstream-main'
 for tag in "${TAGS[@]}"; do
@@ -226,6 +271,7 @@ history-rewrite|b60205|Upstream main is not a descendant of upstream-main
 canary-ok|0e8a16|Owner confirms the canary build was used on their Mac
 digest|1d76db|Weekly intake digest
 selfcheck-failed|b60205|The zero-engine-commits invariant failed
+workflow-trigger|b60205|Upstream workflow triggers could run on mirror refs
 LABELS
 
 # --------------------------------------------------------------------------
@@ -267,12 +313,16 @@ Add the secret the workflows need. It must be a fine-grained personal access tok
   - ${SLUG}:            Contents (write), Workflows (write), Issues (write)
   - ${OWNER}/${APP_REPO}: Contents (write)   (for the engine-promoted repository_dispatch)
 
-  gh secret set ENGINE_PUSH_TOKEN --repo ${SLUG}
+  gh secret set ENGINE_PUSH_TOKEN --repo ${SLUG} --env engine-push
+
+(It is an ENVIRONMENT secret on the engine-push environment, which only ${CI_BRANCH} may use.
+ Do not add it as a repository secret.)
 
 Optional repository variables (Settings > Secrets and variables > Actions > Variables):
   INTAKE_POLICY      main (default) or tags
   MIN_SHELL          fallback minShell for the first promotion, e.g. 1.0.0
   CANARY_OK_FIRST_N  number of first promotions that need the canary-ok label (default 3, 0 disables)
+  TRUSTED_WORKFLOW_TREES  comma-separated .github/workflows tree ids you reviewed (see workflow-trigger issues)
 
 Then smoke-test the pipeline from the Actions tab (all run from ${CI_BRANCH}):
   1. watch     (should be silent and green)

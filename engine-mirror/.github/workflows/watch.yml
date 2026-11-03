@@ -24,13 +24,17 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
-  ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Environment secret: only jobs that name this environment, and only on the opentac-ci
+    # branch, can read ENGINE_PUSH_TOKEN. Pushes of third-party refs can never reach it.
+    environment: engine-push
+    env:
+      ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
     steps:
       - name: Require ENGINE_PUSH_TOKEN
         run: |
@@ -110,6 +114,51 @@ jobs:
             issue_upsert history-rewrite "Upstream history rewrite detected" ../rewrite-body.md
             echo "::error title=History rewrite::upstream main is not a descendant of upstream-main"
             exit 1
+          fi
+
+      # (b2) Third-party workflow triggers. Pushes made with the PAT fire workflows, and the
+      # workflow files that run are the ones inside the pushed (upstream-authored) commits.
+      # Refuse to push anything if upstream's workflows could fire on a ref we create.
+      # ENGINE_PUSH_TOKEN is an environment secret restricted to the opentac-ci branch as a
+      # second layer, so even a missed trigger cannot read it.
+      - name: Scan upstream workflow triggers before pushing
+        working-directory: engine
+        env:
+          TRUSTED_WORKFLOW_TREES: ${{ vars.TRUSTED_WORKFLOW_TREES }}
+        run: |
+          source ../ci/lib.sh
+          mapfile -t added < <(jq -r '.added[]?' ../drift.json)
+          refs=(refs/remotes/upstream/main)
+          for tag in "${added[@]}"; do
+            if ! [[ "$tag" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error title=Odd tag name::refusing to handle upstream tag with unexpected characters"
+              exit 1
+            fi
+            git fetch --no-tags --quiet "$UPSTREAM_URL" "+refs/tags/${tag}:refs/scan/${tag}"
+            refs+=("refs/scan/${tag}")
+          done
+          args=()
+          for r in "${refs[@]}"; do args+=(--ref "$r"); done
+          rc=0
+          node ../ci/trigger-scan.mjs --repo . "${args[@]}" > ../scan.txt || rc=$?
+          cat ../scan.txt
+          if [ "$rc" -eq 3 ]; then
+            {
+              echo "Upstream's \`.github/workflows\` could fire on refs this mirror creates (\`upstream-main\`, \`candidate\`, \`stable\`, \`v*\`, \`stable-*\`). **Nothing was pushed.**"
+              echo
+              echo '```'
+              cat ../scan.txt
+              echo '```'
+              echo
+              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "Review those workflow files. If they are harmless here, add the tree id to the \`TRUSTED_WORKFLOW_TREES\` repository variable; otherwise leave the mirror where it is."
+            } > ../trigger-body.md
+            issue_upsert workflow-trigger "Upstream workflows could run on mirror refs" ../trigger-body.md
+            echo "::error title=Workflow trigger::upstream workflow triggers could match mirror refs; nothing pushed"
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
           fi
 
       # (c) Fast-forward upstream-main, then push NEW tags by name. Never --force, never --tags.

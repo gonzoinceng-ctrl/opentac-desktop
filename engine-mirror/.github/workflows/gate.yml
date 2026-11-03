@@ -311,7 +311,7 @@ jobs:
           repository: OWNER/opentac-desktop
           ref: ${{ steps.shell.outputs.ref }}
           path: app
-          token: ${{ secrets.ENGINE_PUSH_TOKEN || github.token }}
+          token: ${{ github.token }}
           persist-credentials: false
 
       - uses: actions/setup-node@v4
@@ -424,7 +424,8 @@ jobs:
           path: parts/
 
       - name: Upload Playwright output
-        if: ${{ failure() && steps.e2e.outputs.present == 'true' }}
+        # The e2e step is continue-on-error, so failure() is false here; test its outcome instead.
+        if: ${{ !cancelled() && steps.e2e.outputs.present == 'true' && steps.run.outcome == 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-${{ matrix.arch }}

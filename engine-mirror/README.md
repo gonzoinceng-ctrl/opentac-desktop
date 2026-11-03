@@ -28,7 +28,8 @@ enforced by `selfcheck.yml` against the real upstream, not by fork status.
 | `refs/notes/gate` | git notes on candidate commits holding the gate verdict JSON | `intake` |
 
 There is deliberately **no branch named `main`**: upstream's `ci.yml` triggers on
-pushes to `main`, so it can never fire on the mirror. `selfcheck.yml` fails if one appears.
+pushes to `main`, so it can never fire on the mirror. `selfcheck.yml` fails if one appears. That is not the only
+guard: see "Third-party workflows must never see the token" below.
 
 A `stable-*` tag message looks like this (the app reads it):
 
@@ -67,7 +68,7 @@ Labels you use on the canary issue:
 - `canary-ok`: you confirm the canary build was actually launched on your Mac. Required for the
   **first 3 promotions** (repository variable `CANARY_OK_FIRST_N`, default 3, `0` disables). Until
   then `promote` waits quietly with a notice in the run log.
-- `superseded`, `gate-failed`, `tag-drift`, `history-rewrite`, `selfcheck-failed`, `digest`, `canary`
+- `superseded`, `gate-failed`, `tag-drift`, `history-rewrite`, `selfcheck-failed`, `workflow-trigger`, `digest`, `canary`
   are applied by the workflows.
 
 ### Hotfix (about 20 minutes)
@@ -85,7 +86,7 @@ Labels you use on the canary issue:
 | File | When | What it does |
 |---|---|---|
 | `watch.yml` | hourly (`:23`) | checks upstream tags against `manifest/tags.json` (object and peeled SHA) and fails with a `tag-drift` issue on deletion or change; checks upstream `main` descends from `upstream-main` and fails with a `history-rewrite` issue otherwise; fast-forwards `upstream-main`; pushes NEW tags by name; records them in the manifest. Silent on success. |
-| `intake.yml` | Sunday 02:17 UTC, manual | chooses the candidate SHA, runs the gate, on green moves `candidate`, writes the git note, opens the canary issue (JSON block + report) and supersedes older canaries; on red opens/updates `gate-failed`. |
+| `intake.yml` | Sunday 02:17 UTC, manual | chooses the candidate SHA, runs the gate, on green opens the canary issue (JSON block + report), then moves `candidate`, writes the git note and supersedes older canaries; on red opens/updates `gate-failed`. |
 | `gate.yml` | called by intake, or manual | upstream `npm ci`, `doctor`, `test`, `build` under the Node version read from the app repo's `scripts/node-version.json`; `ci/contracts.mjs`; size and dependency diff against `stable`; OpenTac Playwright smoke on macOS arm64 and Intel (see below); produces `gate-report.md`. |
 | `promote.yml` | every 6 h (`:41`), manual | the promotion described above, then `RELEASES.md` entry and a `repository_dispatch` (`engine-promoted`) to the app repo. Idempotent. |
 | `selfcheck.yml` | weekly (Monday 04:31 UTC) | verifies the zero-engine-commits invariant and that no `main` branch exists; opens `selfcheck-failed` on violation. |
@@ -105,10 +106,30 @@ leg (`macos-15-intel`) is `continue-on-error` until it has been stable for a whi
 
 | Name | Where | Purpose |
 |---|---|---|
-| `ENGINE_PUSH_TOKEN` | secret | **Fine-grained PAT or GitHub App token** with **Contents, Workflows and Issues write on this repository** and **Contents write on OWNER/opentac-desktop**. Used for every push of engine refs and tags, for committing the manifest and `RELEASES.md`, and for the cross-repo dispatch. |
+| `ENGINE_PUSH_TOKEN` | **environment secret** on the `engine-push` environment (not a repository secret) | **Fine-grained PAT or GitHub App token** with **Contents, Workflows and Issues write on this repository** and **Contents write on OWNER/opentac-desktop**. Used for every push of engine refs and tags, for committing the manifest and `RELEASES.md`, and for the cross-repo dispatch. |
 | `INTAKE_POLICY` | variable, optional | `main` (default) or `tags` |
 | `MIN_SHELL` | variable, optional | fallback `minShell` for the very first promotion (later ones carry over from the previous `stable-*` tag). The `min_shell` input on a manual intake overrides. |
 | `CANARY_OK_FIRST_N` | variable, optional | how many first promotions require the `canary-ok` label (default 3) |
+| `TRUSTED_WORKFLOW_TREES` | variable, optional | comma-separated `.github/workflows` tree ids you reviewed after a `workflow-trigger` issue (see below) |
+
+### Third-party workflows must never see the token
+
+The mirror pushes upstream-authored commits and tags with a PAT, and PAT pushes fire workflows: the workflow files
+that run are the ones inside the pushed commit, i.e. upstream's code. Two layers keep the token away from them:
+
+1. `ENGINE_PUSH_TOKEN` is an **environment secret** on an environment named `engine-push` whose deployment branches
+   are restricted to `opentac-ci`. Only jobs that declare `environment: engine-push` (the `watch`, `intake` pick and
+   finish, and `promote` jobs) can read it, and only when running on `opentac-ci`. Upstream workflows triggered by a push
+   to `upstream-main`, `candidate`, `stable` or a tag run on those refs and cannot. `bootstrap.sh` creates the
+   environment; set the secret with `gh secret set ENGINE_PUSH_TOKEN --repo OWNER/opentac-engine --env engine-push`.
+   The gate (which runs `npm ci`/`npm test` from the engine) is called without `secrets: inherit` and gets no token.
+2. `ci/trigger-scan.mjs` reads the `on:` block of every upstream workflow before `watch` pushes anything (and weekly in
+   `selfcheck`, over the upstream tip, `candidate`, `stable` and every `v*`/`stable-*` tag). If a `push` trigger has no
+   filter, or its branch/tag filters could match `upstream-main`, `candidate`, `stable`, `v*` or `stable-*`, or the
+   workflow uses `workflow_run`, `create` or `delete`, or the block cannot be parsed, `watch` pushes nothing, opens a
+   `workflow-trigger` issue and fails. Upstream's current `ci.yml` (`push: [main]`, `pull_request`) is safe. After you
+   review a flagged workflow, add the printed tree id to `TRUSTED_WORKFLOW_TREES`. `bootstrap.sh` runs the same scan
+   before its first push and refuses unless given `--trust-upstream-workflows`.
 
 Why not `GITHUB_TOKEN`: upstream edits `.github/workflows/ci.yml` regularly, and `GITHUB_TOKEN` has no
 `workflows` scope, so the first fast-forward past such a commit would be rejected. Every workflow declares its

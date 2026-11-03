@@ -377,8 +377,9 @@ export async function runContracts(engineDir, { nodeVersion } = {}) {
             `scripts/pinokio-start.mjs ${order.why}; Vite snapshots process.env, so the env the shell sets up would be lost`,
           ),
     );
+    const launcherCode = stripComments(launcher);
     results.push(
-      /strictPort\s*:\s*true/.test(launcher)
+      /strictPort\s*:\s*true/.test(launcherCode)
         ? pass('launcher-strict-port', 'launcher passes strictPort: true')
         : fail(
             'launcher-strict-port',
@@ -386,7 +387,7 @@ export async function runContracts(engineDir, { nodeVersion } = {}) {
           ),
     );
     results.push(
-      /Ready at http:\/\/127\.0\.0\.1:/.test(launcher)
+      /Ready at http:\/\/127\.0\.0\.1:/.test(launcherCode)
         ? pass('launcher-ready-line', 'launcher prints a "Ready at http://127.0.0.1:" line')
         : fail(
             'launcher-ready-line',
@@ -408,8 +409,11 @@ export async function runContracts(engineDir, { nodeVersion } = {}) {
       fail('key-setup-dev-only', 'server/standalone/key-setup.js is missing, cannot verify its dev-only registration'),
     );
   } else {
+    // Comment-stripped: a doc comment mentioning `.env` must not satisfy the check.
+    const keySetupCode = stripComments(keySetup);
     const writesRootEnv =
-      /['"`]\.env['"`]/.test(keySetup) &&
+      (/pinokioManaged\(\)\s*\?[^:]*:\s*\[\s*['"]\.env['"]\s*\]/.test(keySetupCode) ||
+        /path\.join\([^)]*['"]\.env['"]\s*\)/.test(keySetupCode)) &&
       /GEV_LAUNCHER/.test(keySetup) &&
       /sourceRoot|defaultSourceRoot/.test(keySetup);
     results.push(
@@ -420,11 +424,10 @@ export async function runContracts(engineDir, { nodeVersion } = {}) {
             'server/standalone/key-setup.js no longer writes <root>/.env keyed on GEV_LAUNCHER; saved keys may land somewhere the shell does not read',
           ),
     );
-    const code = stripComments(keySetup);
-    const applyIdx = code.search(/\bapply\s*:/);
-    const applySlice = applyIdx >= 0 ? code.slice(applyIdx, applyIdx + 300) : '';
+    // The predicate body must test command === 'serve' (or be apply: 'serve');
+    // a bare `isPreview` in the destructured parameters does not count.
     results.push(
-      /isPreview|command\s*===?\s*['"]serve['"]/.test(applySlice)
+      /\bapply\s*:\s*(?:['"]serve['"]|\([^)]*\)\s*=>\s*[^,]*command\s*===?\s*['"]serve['"])/.test(keySetupCode)
         ? pass('key-setup-dev-only', 'key-setup plugin registers only for the dev server (apply predicate)')
         : fail(
             'key-setup-dev-only',
@@ -477,7 +480,7 @@ export async function runContracts(engineDir, { nodeVersion } = {}) {
     results.push(fail('hud-summary-extract', `${hudRel} is missing, cannot run extractOpenAiResponseText`));
   } else {
     results.push(
-      /fetch\(\s*(['"`])https:\/\/api\.openai\.com\/v1\/responses\1/.test(hud)
+      /fetch\(\s*(['"`])https:\/\/api\.openai\.com\/v1\/responses\1/.test(stripComments(hud))
         ? pass('hud-summary-url', 'HUD summary posts to https://api.openai.com/v1/responses')
         : fail(
             'hud-summary-url',

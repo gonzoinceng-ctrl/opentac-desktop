@@ -40,6 +40,39 @@ jobs:
           engine_fetch
           upstream_fetch
 
+      - name: Scan workflow triggers at the upstream tip and mirror refs
+        env:
+          TRUSTED_WORKFLOW_TREES: ${{ vars.TRUSTED_WORKFLOW_TREES }}
+        run: |
+          source ci/lib.sh
+          cd engine
+          refs=(refs/remotes/upstream/main refs/remotes/origin/upstream-main refs/remotes/origin/candidate refs/remotes/origin/stable)
+          while read -r t; do
+            [ -n "$t" ] && refs+=("refs/tags/${t}")
+          done < <(git tag --list 'v*'; git tag --list 'stable-*')
+          args=()
+          for r in "${refs[@]}"; do args+=(--ref "$r"); done
+          rc=0
+          node ../ci/trigger-scan.mjs --repo . "${args[@]}" > ../scan.txt || rc=$?
+          cat ../scan.txt
+          if [ "$rc" -eq 3 ]; then
+            {
+              echo "Workflow files at the upstream tip, \`candidate\`, \`stable\` or a mirrored tag have triggers that could fire on refs this mirror creates."
+              echo
+              echo '```'
+              cat ../scan.txt
+              echo '```'
+              echo
+              echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo
+              echo "Add reviewed tree ids to the \`TRUSTED_WORKFLOW_TREES\` repository variable, or stop the mirror."
+            } > ../trigger-body.md
+            issue_upsert workflow-trigger "Upstream workflows could run on mirror refs" ../trigger-body.md
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+
       - name: Verify the invariant
         run: |
           source ci/lib.sh

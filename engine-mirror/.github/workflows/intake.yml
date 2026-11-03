@@ -51,12 +51,16 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
-  ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
 
 jobs:
   pick:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Environment secret: only jobs that name this environment, and only on the opentac-ci
+    # branch, can read ENGINE_PUSH_TOKEN. Pushes of third-party refs can never reach it.
+    environment: engine-push
+    env:
+      ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
     outputs:
       sha: ${{ steps.choose.outputs.sha }}
       upstream_tag: ${{ steps.choose.outputs.upstream_tag }}
@@ -190,14 +194,18 @@ jobs:
     uses: ./.github/workflows/gate.yml
     with:
       sha: ${{ needs.pick.outputs.sha }}
-    secrets: inherit
+    # No `secrets: inherit`: the gate runs upstream's code (npm ci/test/build) and gets no push token.
 
   finish:
     needs: [pick, gate]
     if: ${{ !cancelled() && needs.pick.outputs.noop == 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Environment secret: only jobs that name this environment, and only on the opentac-ci
+    # branch, can read ENGINE_PUSH_TOKEN. Pushes of third-party refs can never reach it.
+    environment: engine-push
     env:
+      ENGINE_PUSH_TOKEN: ${{ secrets.ENGINE_PUSH_TOKEN }}
       SHA: ${{ needs.pick.outputs.sha }}
       UPSTREAM_TAG: ${{ needs.pick.outputs.upstream_tag }}
       POLICY: ${{ needs.pick.outputs.policy }}
@@ -245,6 +253,7 @@ jobs:
       - name: Record the verdict
         run: |
           source ci/lib.sh
+          mkdir -p report
           [ -f report/gate-report.md ] || echo "(the gate produced no report; see the run)" > report/gate-report.md
           head -c 40000 report/gate-report.md > report/gate-report-trunc.md
 
@@ -315,16 +324,18 @@ jobs:
             exit 1
           fi
 
-          # Move candidate: fast-forward or first set. Forced only on explicit request.
+          # Decide how candidate will move (fast-forward or first set; forced only on explicit
+          # request). The push itself happens AFTER the canary issue exists, so a failed
+          # `gh issue create` cannot leave candidate == SHA with no canary (the next intake
+          # would no-op on "already the candidate" and promote would find nothing).
+          cand_force=false
           if [ -n "$CANDIDATE_SHA" ] && ! git merge-base --is-ancestor "$CANDIDATE_SHA" "$SHA"; then
             if [ "$FORCE" = true ]; then
-              git push --force-with-lease="refs/heads/candidate:${CANDIDATE_SHA}" origin "${SHA}:refs/heads/candidate"
+              cand_force=true
             else
               echo "::error title=Not a fast-forward::candidate ${CANDIDATE_SHA:0:7} is not an ancestor of ${short}. Re-run with force."
               exit 1
             fi
-          else
-            git push origin "${SHA}:refs/heads/candidate"
           fi
           cd ..
 
@@ -335,17 +346,29 @@ jobs:
             '{sha: $sha, upstreamTag: $upstreamTag, readyAt: $readyAt, gateRunUrl: $gateRunUrl, policy: $policy, commitRange: $commitRange, minShell: $minShell, gateResult: "green"}' \
             > canary.json
 
-          # Git note with the same JSON, so promote can re-read the verdict for this exact SHA.
-          (
-            cd engine
-            git notes --ref=refs/notes/gate add -f -F ../canary.json "$SHA"
-            git push origin refs/notes/gate:refs/notes/gate
-          )
-
           node ci/canary.mjs emit-body --data canary.json --report report/gate-report-trunc.md > canary-body.md
           ensure_labels
+          # Canary issue FIRST, then move candidate and write the note.
           url=$(gh issue create --title "Canary: ${short} (${title_tag})" --label canary --body-file canary-body.md)
           new_n=$(printf '%s' "$url" | grep -Eo '[0-9]+$')
+
+          (
+            cd engine
+            if [ "$cand_force" = true ]; then
+              git push --force-with-lease="refs/heads/candidate:${CANDIDATE_SHA}" origin "${SHA}:refs/heads/candidate"
+            else
+              git push origin "${SHA}:refs/heads/candidate"
+            fi
+            # Git note with the same JSON, so promote can re-read the verdict for this exact SHA.
+            git notes --ref=refs/notes/gate add -f -F ../canary.json "$SHA"
+            git push origin refs/notes/gate:refs/notes/gate
+          ) || {
+            # Do not leave an orphan canary pointing at a candidate that never moved.
+            gh issue edit "$new_n" --add-label superseded > /dev/null || true
+            gh issue comment "$new_n" --body "Pushing \`candidate\` failed; this canary is void. Re-run intake." > /dev/null || true
+            gh issue close "$new_n" --reason "not planned" > /dev/null || true
+            exit 1
+          }
           promote_after=$(node ci/canary.mjs promote-after --ready-at "$ready_at")
 
           # Supersede older canaries and clear any open gate-failed issue (this candidate is green).

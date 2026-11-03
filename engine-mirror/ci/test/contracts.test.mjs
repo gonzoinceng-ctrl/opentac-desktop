@@ -149,6 +149,13 @@ test('contracts: each regression is named and fails', async () => {
     ['hud-summary-url', { 'server/providers/openai/hud-summary.js': "function extractOpenAiResponseText(d){return d.output_text}\nawait fetch('https://api.openai.com/v1/chat/completions', {});" }],
     ['hud-summary-extract', { 'server/providers/openai/hud-summary.js': "function extractOpenAiResponseText(d){return ''}\nawait fetch('https://api.openai.com/v1/responses', {});" }],
     ['celestrak-route', { 'server/providers/space/celestrak.js': '// gone' }],
+    // Comment-only / parameter-only matches must not satisfy a contract.
+    ['key-setup-writes-root-env', { 'server/standalone/key-setup.js': "/** writes `.env` */\nconst L = process.env.GEV_LAUNCHER; const p = (sourceRoot) => path.join(sourceRoot, 'secrets.txt');\nconst plugin = { apply: (_c, { command, isPreview }) => command === 'serve' && !isPreview };" }],
+    ['key-setup-writes-root-env', { 'server/standalone/key-setup.js': "/** writes `.env` */\nconst L = process.env.GEV_LAUNCHER; const sourceRoot = 1; const p = pinokioManaged() ? ['pinokio', 'ENVIRONMENT'] : ['.env.local'];\nconst plugin = { apply: (_c, { command, isPreview }) => command === 'serve' && !isPreview };" }],
+    ['key-setup-dev-only', { 'server/standalone/key-setup.js': "const L = process.env.GEV_LAUNCHER; const p = (sourceRoot) => path.join(sourceRoot, '.env');\nconst plugin = { apply: (_c, { command, isPreview }) => true };" }],
+    ['launcher-strict-port', { 'scripts/pinokio-start.mjs': `${GOOD_LAUNCHER}\n// strictPort: true,\nconsole.log('Ready at http://127.0.0.1:1/')` }],
+    ['launcher-ready-line', { 'scripts/pinokio-start.mjs': `${GOOD_LAUNCHER}\nconst o = {strictPort: true};\n// console.log(\`[Pinokio] Ready at http://127.0.0.1:\${port}/\`)` }],
+    ['hud-summary-url', { 'server/providers/openai/hud-summary.js': "function extractOpenAiResponseText(d){return d.output_text}\n// await fetch('https://api.openai.com/v1/responses', {});\nawait fetch('https://example.com/x', {});" }],
   ];
   for (const [name, override] of cases) {
     const results = await runContracts(fixtureEngine(override), { nodeVersion: '24.22.2' });

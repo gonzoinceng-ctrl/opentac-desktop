@@ -103,3 +103,16 @@ Every blocker/high finding below survived an adversarial refutation pass. Each o
 - App icon is an original OpenTac mark, not upstream's logo (brief 01 §12 and 06 §5 outweigh 04 §1.4).
 - Website: architecture auto-detection uses `navigator.userAgentData.getHighEntropyValues(['architecture'])` with a WebGL renderer probe and an explicit toggle (the UA string is frozen to "Intel" on Apple Silicon Safari); download data is build-time only (no runtime GitHub API call, which would violate the no-third-party rule and the CSP); hosting is Cloudflare Pages so security headers can be set.
 - Needs-a-human additions: the mirror repository and its push token, Actions enabled, `APPLE_TEAM_ID` if the Apple-ID route is chosen, the Cloudflare account for Pages, the registrar for opentac.icu, the GitHub identity for the upstream `OPENAI_BASE_URL` PR, and a decision on commercial use given the data licences. The "two green weekly intakes" and canary soak are owner-timed gates.
+
+## 2026-11-03 — Mirror pipeline implementation notes (engine-mirror/)
+
+Built and proven locally: 12 contract checks pass against upstream HEAD `48146f8e`; 33 node:test cases prove each contract fails loudly when deliberately broken; `manifest/tags.json` is seeded from the live upstream tags (object and peeled SHAs). Judgement calls beyond the design corrections:
+
+- **Token exposure.** Pushing upstream history with a PAT would run upstream's own `.github/workflows/ci.yml` on the mirror with the mirror's secrets. Mitigations: `ENGINE_PUSH_TOKEN` is a GitHub *environment* secret (`engine-push`, deployment branch restricted to `opentac-ci`), so jobs that check out engine refs never receive it; the gate job (which runs upstream code) gets no token at all; `ci/trigger-scan.mjs` scans every candidate's workflow files and fails intake if any would fire on the mirror's ref names; upstream's `ci.yml` today triggers only on `main`, which the mirror never has.
+- Intake supersedes the previous canary issue **after** the new gate is green, not before: a red gate must not cancel a healthy canary that is still `candidate`.
+- The canary JSON carries `gateResult: "green"` and the same JSON is stored as a git note on the SHA; promote trusts the note for the SHA/verdict and the issue only for labels.
+- The first `CANARY_OK_FIRST_N` promotions (repo variable, default 3) require the owner's `canary-ok` label; `force=true` bypasses it. This encodes the brief's "two green weekly intakes before first public release" as a mechanical gate.
+- `minShell` for a promotion comes from the intake input, else the newest `stable-*` annotation, else repo variable `MIN_SHELL`, else `0.0.0`.
+- The gate's smoke legs report `PENDING` and pass until the app repo publishes `npm run e2e`; after that they gate for real. The Intel leg is `continue-on-error` until Intel runner availability is confirmed stable.
+- `node --test engine-mirror/ci/test` (bare directory) fails on Node 24.22; use the glob or `npm test` inside `engine-mirror/`.
+- `bootstrap.sh` has been written and syntax-checked but **never run**; running it creates a public GitHub repository and is the owner's call.

@@ -10,7 +10,7 @@
 # - Nothing here ever passes --force or --tags to git push.
 
 UPSTREAM_URL="https://github.com/bilawalsidhu/gods-eye-view"
-ALL_LABELS=(canary hold reject superseded gate-failed tag-drift history-rewrite canary-ok digest selfcheck-failed)
+ALL_LABELS=(canary hold reject superseded gate-failed tag-drift history-rewrite canary-ok digest selfcheck-failed workflow-trigger)
 
 # engine_init <dir>
 # Create an empty repo in <dir> whose `origin` is this mirror. When
