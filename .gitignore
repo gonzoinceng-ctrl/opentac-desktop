@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+vendor/
+build/icon.icns
+build/icon.iconset/
+*.log
+.DS_Store
+# brief archive and its raw extraction live in docs/brief/ once copied
+_brief_extract/
+opentac-brief.zip
+test-results/
+playwright-report/
+.opentac-dev-data/

@@ -1,0 +1,50 @@
+{
+  "name": "opentac",
+  "productName": "OpenTac",
+  "version": "0.1.0",
+  "description": "OpenTac — unofficial macOS desktop app for the open-source God's Eye View project by Bilawal Sidhu (bilawalsidhu/gods-eye-view), with in-place engine updates from GitHub.",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.14.0 <25"
+  },
+  "scripts": {
+    "fetch-node": "node scripts/fetch-node.mjs",
+    "make-icon": "node scripts/make-icon.mjs",
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test -c test/e2e/playwright.config.ts",
+    "pack": "npm run build && electron-builder --mac --dir",
+    "dist": "npm run build && electron-builder --mac --publish never",
+    "release": "npm run build && electron-builder --mac --publish always"
+  },
+  "dependencies": {
+    "dugite": "3.3.2",
+    "electron-log": "5.4.4",
+    "electron-updater": "6.8.11",
+    "semver": "7.8.6",
+    "tree-kill": "1.2.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "@types/semver": "7.8.0",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "sharp": "0.35.5",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0"
+  },
+  "allowScripts": {
+    "dugite@3.3.2": true,
+    "esbuild@0.28.2": true,
+    "electron-winstaller@5.4.0": true
+  }
+}
