@@ -88,4 +88,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ${{ env.SITE_OUT_DIR }} --project-name=${{ env.CF_PROJECT }} --branch=main --commit-dirty=true
+          # Pages Functions live in site/functions and wrangler looks for functions/ next to the
+          # current directory, so deploy from site/ with the relative output dir (site/README.md).
+          workingDirectory: site
+          command: pages deploy dist --project-name=${{ env.CF_PROJECT }} --branch=main --commit-dirty=true

@@ -39,15 +39,45 @@ path: /
       </div>
       {{/if}}
 
+      {{#if hero}}
       <figure class="shot">
-        <!-- OWNER: drop real screenshots of OpenTac running into site/src/assets/img/screenshots/ and replace the
-             .shot-box div below with <img src="/assets/img/screenshots/main.png" width="1600" height="900" alt="...">.
-             Take them yourself; do NOT copy the upstream README's GIFs, thumbnails or screenshots (MIT covers code, not media). -->
+        <picture>
+          {{#if hero.webp}}<source srcset="{{hero.webp}}" type="image/webp">{{/if}}
+          <img src="{{hero.src}}" width="{{hero.width}}" height="{{hero.height}}" alt="{{hero.alt}}" loading="lazy" decoding="async">
+        </picture>
+        <figcaption>Screenshots show God's Eye View running inside OpenTac.</figcaption>
+      </figure>
+      {{else}}
+      <figure class="shot">
+        <!-- Real screenshots appear automatically: put PNG/WebP files in site/src/assets/screenshots/
+             (see scripts/site-screenshots.md). Take them yourself; do NOT copy the upstream README's media. -->
         <div class="shot-box" role="img" aria-label="Placeholder for a screenshot of OpenTac"><span>Screenshot coming soon</span></div>
         <figcaption>Screenshots show God's Eye View running inside OpenTac.</figcaption>
       </figure>
+      {{/if}}
     </div>
   </section>
+
+  {{#if gallery}}
+  <section class="section" aria-labelledby="screenshots">
+    <div class="wrap">
+      <h2 id="screenshots">Screenshots</h2>
+      <ul class="shots">
+        {{#each gallery}}
+        <li>
+          <figure class="shot">
+            <picture>
+              {{#if webp}}<source srcset="{{webp}}" type="image/webp">{{/if}}
+              <img src="{{src}}" width="{{width}}" height="{{height}}" alt="{{alt}}" loading="lazy" decoding="async">
+            </picture>
+            <figcaption>{{title}}. Screenshots show God's Eye View running inside OpenTac.</figcaption>
+          </figure>
+        </li>
+        {{/each}}
+      </ul>
+    </div>
+  </section>
+  {{/if}}
 
   <section class="section" aria-labelledby="features">
     <div class="wrap">

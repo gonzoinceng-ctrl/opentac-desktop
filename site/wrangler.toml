@@ -1,0 +1,11 @@
+# Cloudflare Pages configuration for the opentac project (Pages config, honoured by `wrangler pages deploy`).
+# Deploy from THIS directory so that ./functions is picked up:
+#   cd site && npx -y wrangler@4 pages deploy dist --project-name=opentac
+name = "opentac"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-10-01"
+
+# Contact form messages and rate-limit counters (see functions/api/contact.ts, contact-inbox.mjs).
+[[kv_namespaces]]
+binding = "CONTACT_KV"
+id = "17f9dfc2177a44138a517877db47bd04"

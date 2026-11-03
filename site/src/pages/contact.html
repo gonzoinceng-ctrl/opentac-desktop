@@ -1,0 +1,58 @@
+---
+title: Contact
+description: Contact the OpenTac project about the Mac app. Engine and globe questions are best raised with the upstream God's Eye View repository.
+path: /contact/
+current: contact
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap prose">
+    <h1>Contact</h1>
+    <p>OpenTac is a small, unofficial project. Before writing, please check whether one of these is the better place.</p>
+
+    <div class="callout">
+      <ul>
+        <li><strong>Problems with the Mac app or its installer:</strong> open an issue at <a href="{{links.appIssues}}" rel="noopener">github.com/gonzoinceng-ctrl/opentac-desktop/issues</a>. Others can find and add to it there.</li>
+        <li><strong>Questions about the engine or the globe itself</strong> (layers, data, voice control, what a button does): these are best raised in the <a href="{{links.upstreamIssues}}" rel="noopener">upstream God's Eye View repository</a>. OpenTac does not change the engine, and the upstream author is the person who can answer.</li>
+      </ul>
+    </div>
+
+    <h2>Send a message</h2>
+    <p class="muted">Messages are stored on Cloudflare, which hosts this site, and are read by hand. Nothing is emailed or sent anywhere else, and they are deleted automatically after 90 days. Replies are not guaranteed. See the <a href="/privacy/">privacy page</a>.</p>
+
+    <div id="contact-status" class="form-status" role="status" tabindex="-1" hidden></div>
+
+    <form id="contact-form" class="contact-form" method="post" action="/api/contact" autocomplete="on">
+      <label>Name
+        <input type="text" name="name" required maxlength="100" autocomplete="name">
+      </label>
+      <label>Email
+        <input type="email" name="email" required maxlength="254" autocomplete="email">
+        <span class="form-hint">Only used to reply to you.</span>
+      </label>
+      <label>Subject
+        <select name="subject" required>
+          <option value="" selected disabled>Choose a subject</option>
+          <option>App problem</option>
+          <option>Engine/globe question</option>
+          <option>Feedback</option>
+          <option>Other</option>
+        </select>
+      </label>
+      <label>Message
+        <textarea name="message" required minlength="10" maxlength="5000" rows="8"></textarea>
+        <span class="form-hint">10 to 5000 characters. Please do not include API keys or passwords.</span>
+      </label>
+      <div class="hp" aria-hidden="true">
+        <label>Leave this field empty
+          <input type="text" name="website" tabindex="-1" autocomplete="off">
+        </label>
+      </div>
+      <button class="btn btn-primary" type="submit">Send message</button>
+    </form>
+    <noscript><p class="muted">JavaScript is off, which is fine: the form sends normally and you will land on a thank-you page.</p></noscript>
+  </div>
+</main>
+{{> footer}}
+<script src="/assets/js/contact.js" defer></script>

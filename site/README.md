@@ -20,7 +20,7 @@ node site/build.mjs --images   # force-regenerate favicons and the OG image
   (falling back to the API's per-asset `digest`), and classifies `.dmg`/`.zip` assets as arm64 when the file name
   contains `arm64`, otherwise x64. If there is no release or a request fails, every page shows a
   "First release coming soon, build from source on GitHub" state; no button ever points nowhere.
-  There is no runtime API call (the CSP has `connect-src 'none'`).
+  There is no runtime API call (the CSP allows `connect-src 'self'` only, for the contact form enhancement).
 - **Architecture detection** is `src/assets/js/arch.js`: `navigator.userAgentData.getHighEntropyValues(['architecture'])`,
   else a WebGL renderer probe (`Apple M…` is arm64; Intel/AMD/NVIDIA is x64; Safari's masked `Apple GPU` is left on
   arm64). The explicit "Intel Mac? Download x64" link is always in the HTML.
@@ -36,8 +36,36 @@ node site/build.mjs --images   # force-regenerate favicons and the OG image
 - **Env.** `GITHUB_TOKEN` (rate limit), `OPENTAC_ENGINE_STABLE` (e.g. `stable-2026.11.03`, shown on `/changelog`),
   `OPENTAC_SITE_OFFLINE=1` (skip network), `OPENTAC_SITE_FIXTURE=file.json` (`{latest, releases, sums}` in GitHub API
   shape, to preview the populated site offline).
-- **Screenshots.** The home page has a placeholder figure and an HTML comment saying where to drop real screenshots
-  (take your own; do not copy upstream's README media).
+- **Screenshots.** The build globs `src/assets/screenshots/*.png|webp`. The home hero uses `01-globe` (else the first
+  file) and a "Screenshots" section shows the rest, each in a lazy-loaded `<picture>` (WebP, PNG fallback) with
+  width/height and the caption "Screenshots show God's Eye View running inside OpenTac". With no files the
+  placeholder figure stays. The files come from `scripts/screenshots.mts` (`npm run site:screenshots`; see
+  `scripts/site-screenshots.md`). Take your own; do not copy upstream's README media.
+
+## Contact form and Pages Functions
+
+`/contact/` is a plain HTML form that POSTs to `/api/contact` (works without JavaScript: 303 to `/contact/thanks/`);
+`src/assets/js/contact.js` upgrades it to a fetch with an inline result. The backend is the Pages Function
+`functions/api/contact.ts` (TypeScript, compiled by Pages; no bundler): validates lengths, email shape, subject,
+honeypot (`website`, silently accepted and dropped), same-origin `Origin`, and form/JSON content type; rate-limits
+to 5 per hour per IP (hashed counter in KV); stores `msg:<iso>:<random>` in the `CONTACT_KV` namespace with a 90-day
+TTL. No email is sent. Function responses carry their own security headers (`_headers` only covers static files).
+
+- Config: `site/wrangler.toml` (`pages_build_output_dir = "dist"`, KV binding `CONTACT_KV`, namespace id
+  `17f9dfc2177a44138a517877db47bd04`). Wrangler looks for `functions/` in the **current directory**, not in the
+  output directory, so deploy **from `site/`**:
+
+  ```sh
+  node site/build.mjs
+  cd site && npx -y wrangler@4 pages deploy dist --project-name=opentac
+  ```
+
+  (`wrangler pages deploy site/dist` from the repo root deploys the static files only and drops the function.
+  `.github/workflows/site.yml` must therefore use `working-directory: site` and `dist`.)
+- Reading the inbox: `node site/contact-inbox.mjs list`, `read <key>`, `delete <key>` (needs `CLOUDFLARE_API_TOKEN`
+  with Workers KV Storage: Edit, and `CLOUDFLARE_ACCOUNT_ID`; wraps `wrangler kv key list/get/delete --remote`).
+  The raw equivalents: `npx wrangler kv key list --namespace-id <id> --prefix msg: --remote`, then `... kv key get <key>`.
+- The deploy token also needs access to Workers KV only when you use the inbox CLI, not for deploying.
 
 ## Cloudflare Pages setup
 
@@ -77,5 +105,5 @@ Pages project is **not** connected to Git:
 
 `robots.txt`, `sitemap.xml` (every page except 404), `_headers` (HSTS, nosniff, referrer policy, minimal
 permissions policy, strict CSP: `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self';
-connect-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'`), `_redirects`, `site.webmanifest`,
+connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`), `_redirects`, `site.webmanifest`,
 `404.html`, `favicon.ico`.
