@@ -46,7 +46,6 @@ jobs:
       - name: Check out the CI branch
         uses: actions/checkout@v4
         with:
-          path: ci
           fetch-depth: 1
           token: ${{ secrets.ENGINE_PUSH_TOKEN }}
 
@@ -72,7 +71,7 @@ jobs:
           source ci/lib.sh
           git ls-remote --tags --quiet "$UPSTREAM_URL" > lsremote.txt
           rc=0
-          node ci/manifest.mjs check "$UPSTREAM_URL" --manifest ci/manifest/tags.json \
+          node ci/manifest.mjs check "$UPSTREAM_URL" --manifest manifest/tags.json \
             --ls-remote-file lsremote.txt --json > drift.json || rc=$?
           if [ "$rc" -eq 2 ]; then
             {
@@ -202,13 +201,13 @@ jobs:
       - name: Update the tag manifest
         run: |
           source ci/lib.sh
-          git -C ci config user.name "opentac-engine-bot"
-          git -C ci config user.email "opentac-engine-bot@users.noreply.github.com"
-          node ci/manifest.mjs update "$UPSTREAM_URL" --manifest ci/manifest/tags.json \
+          git config user.name "opentac-engine-bot"
+          git config user.email "opentac-engine-bot@users.noreply.github.com"
+          node ci/manifest.mjs update "$UPSTREAM_URL" --manifest manifest/tags.json \
             --ls-remote-file lsremote.txt > /dev/null
-          if ! git -C ci diff --quiet -- manifest/tags.json; then
-            git -C ci add manifest/tags.json
-            git -C ci commit --quiet -m "manifest: record new upstream tags ($(jq -r '.added | join(", ")' drift.json))"
-            push_default_branch ci "$DEFAULT_BRANCH"
+          if ! git diff --quiet -- manifest/tags.json; then
+            git add manifest/tags.json
+            git commit --quiet -m "manifest: record new upstream tags ($(jq -r '.added | join(", ")' drift.json))"
+            push_default_branch . "$DEFAULT_BRANCH"
           fi
       # (e) Silent on success: no comments, no summary.

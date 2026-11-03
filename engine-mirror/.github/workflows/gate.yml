@@ -70,19 +70,18 @@ jobs:
             exit 1
           fi
 
+      - name: Check out the CI branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Check out the engine at the candidate SHA
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.sha }}
           path: engine
           fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check out the CI branch
-        uses: actions/checkout@v4
-        with:
-          path: ci
-          fetch-depth: 1
           persist-credentials: false
 
       # The Node the gate uses is the Node the app ships: one machine-readable file in the app repo.

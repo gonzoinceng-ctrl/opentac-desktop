@@ -68,7 +68,6 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          path: ci
           fetch-depth: 1
           token: ${{ secrets.ENGINE_PUSH_TOKEN }}
 
@@ -222,8 +221,8 @@ jobs:
           READY_AT: ${{ steps.select.outputs.ready_at }}
         run: |
           source ../ci/lib.sh
-          git -C ../ci config user.name "opentac-engine-bot"
-          git -C ../ci config user.email "opentac-engine-bot@users.noreply.github.com"
+          git -C .. config user.name "opentac-engine-bot"
+          git -C .. config user.email "opentac-engine-bot@users.noreply.github.com"
           if ! [[ "$SEVERITY" =~ ^(normal|security)$ ]]; then SEVERITY=normal; fi
 
           # Re-read the labels immediately before pushing: a hold added during this run still wins.
@@ -290,10 +289,10 @@ jobs:
             node ../ci/canary.mjs release-entry --tag "$tag" --date "$(date -u +%F)" --range "$range_short" \
               --log ../log.txt --diffstat ../diffstat.txt --deps "$deps" --upstream-tag "$UPSTREAM_TAG" \
               --gate-run "$GATE_RUN" --canary-days "$canary_days" --min-shell "$MIN_SHELL" --severity "$SEVERITY" > ../entry.md
-            node ../ci/canary.mjs prepend-release --file ../ci/RELEASES.md --entry ../entry.md
-            git -C ../ci add RELEASES.md
-            git -C ../ci commit --quiet -m "releases: ${tag} (${SHA:0:7})"
-            push_default_branch ../ci "$DEFAULT_BRANCH"
+            node ../ci/canary.mjs prepend-release --file ../RELEASES.md --entry ../entry.md
+            git -C .. add RELEASES.md
+            git -C .. commit --quiet -m "releases: ${tag} (${SHA:0:7})"
+            push_default_branch .. "$DEFAULT_BRANCH"
           )
           rel_rc=$?
           set -e
