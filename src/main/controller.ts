@@ -462,7 +462,7 @@ export function createController(deps: ControllerDeps): ShellController {
   let aiStatus: Pick<AiPrefsPublic, 'hasOpenRouterKey' | 'hasXaiKey' | 'encryptionAvailable'> = {
     hasOpenRouterKey: false,
     hasXaiKey: false,
-    encryptionAvailable: false,
+    encryptionAvailable: null,
   };
   let runningPort: number | null = null;
   let mainUrl: string | null = null;
@@ -667,12 +667,24 @@ export function createController(deps: ControllerDeps): ShellController {
     return `http://127.0.0.1:${p}`;
   }
 
-  async function refreshAiStatus(): Promise<void> {
+  /** True when the summary provider needs a key from secure storage at launch. */
+  function providerNeedsStoredKey(): boolean {
+    return state.ai.provider === 'openrouter' || state.ai.provider === 'xai';
+  }
+
+  /**
+   * Refreshes the key-presence flags (secrets.json only). The Keychain is asked only when
+   * `probeKeychain` is set: on macOS the first safeStorage call can raise a password prompt (a
+   * "OpenTac Safe Storage" item made by a differently signed build) and a pending prompt also
+   * blocks quit, so a plain launch never touches it. Preferences, saving a key, and providers that
+   * need a stored key do.
+   */
+  async function refreshAiStatus(opts: { probeKeychain?: boolean } = {}): Promise<void> {
     try {
-      // has() only reads secrets.json. available() may touch the Keychain (and so a password
-      // prompt), so it is awaited last and bounded by the secrets module's timeout.
       const [hasOpenRouterKey, hasXaiKey] = await Promise.all([secrets.has('openrouter'), secrets.has('xai')]);
       aiStatus = { ...aiStatus, hasOpenRouterKey, hasXaiKey };
+      if (opts.probeKeychain !== true) return;
+      // Bounded by the secrets module's timeout; awaited last.
       const encryptionAvailable = await secrets.available();
       aiStatus = { ...aiStatus, encryptionAvailable };
       if (!encryptionAvailable) log.warn('secure key storage is not available; provider keys cannot be saved');
@@ -1626,6 +1638,8 @@ export function createController(deps: ControllerDeps): ShellController {
         emitNow();
         void refreshEngineKeys();
         void refreshEngineSettings();
+        // Preferences is where keys get saved, so this is the moment to learn whether secure storage works.
+        if (aiStatus.encryptionAvailable === null) void refreshAiStatus({ probeKeychain: true }).then(() => emitNow());
         return;
       case 'openDataFolder':
         // The IPC layer intercepts this and opens the data folder; nothing to do here.
@@ -1688,12 +1702,14 @@ export function createController(deps: ControllerDeps): ShellController {
 
   async function setAiKey(payload: SetAiKeyPayload): Promise<void> {
     if (!(await secrets.available())) {
+      aiStatus = { ...aiStatus, encryptionAvailable: false };
+      emitNow();
       throw new Error(
         'Secure storage is not available on this Mac, so OpenTac cannot save an API key. Sign in to your Mac account normally and restart OpenTac.',
       );
     }
     await secrets.set(payload.provider, payload.key === '' ? null : payload.key);
-    await refreshAiStatus();
+    await refreshAiStatus({ probeKeychain: true });
     if (state.ai.provider === payload.provider) await refreshGatewayKey();
     emitNow();
   }
@@ -2005,8 +2021,9 @@ export function createController(deps: ControllerDeps): ShellController {
           void handleCrash(e);
         }
       });
-      // Background: the safeStorage probe can wait on a Keychain prompt and must not hold up start().
-      void refreshAiStatus().then(() => emitNow());
+      // Background, and the Keychain is only asked when this launch needs a stored key: a pending
+      // Keychain prompt must neither hold up start() nor be raised by a launch that never uses it.
+      void refreshAiStatus({ probeKeychain: providerNeedsStoredKey() }).then(() => emitNow());
       await refreshEngineSettings();
       engineKeysView = fallbackEngineKeys(
         await savedEnvKeyNames(),

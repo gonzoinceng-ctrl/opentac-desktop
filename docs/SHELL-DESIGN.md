@@ -20,7 +20,7 @@ privileges: { standard: true, secure: true, supportFetchAPI: true } }])`,
 `app.getAppPath()`, `app.isPackaged`, `process.arch`), `ensureDataDirs`, create the electron-log sink
 and `Logger`, load `ShellState` (a damaged `state.json` is salvaged field by field: channel, port, summary provider and app settings are kept when valid, a truncated file keeps channel and port, garbage resets; a one-time startup notice says what was kept), register `app://` via `protocol.handle` serving
 `dist/renderer/setup/**` only (path-traversal guard; 404 otherwise), install permission handlers,
-build the menu, create the `AppController`, and call `controller.start()`. Boot never waits for `safeStorage` (the Keychain prompt) before creating windows; key storage simply reports unavailable until it answers.
+build the menu, create the `AppController`, and call `controller.start()`. Boot never waits for `safeStorage` (the Keychain prompt), and a plain launch never asks it (DECISIONS 2026-11-04), before creating windows; key storage simply reports unavailable until it answers.
 
 Lifecycle: `window-all-closed` does nothing on macOS (server keeps running; Dock icon stays);
 `activate` re-shows the main window when `RUNNING`, else the setup window. `before-quit` sets a

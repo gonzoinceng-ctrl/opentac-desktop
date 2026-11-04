@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ACTION_NAMES, PHASES, type Disclosure, type Phase } from '../../src/shared/ipc.js';
 import type { ShellState } from '../../src/shared/types.js';
 import {
@@ -1386,7 +1386,27 @@ describe('AI provider wiring', () => {
     const h = await boot();
     h.secrets.isAvailable = false;
     await expect(h.controller.setAiKey({ provider: 'xai', key: 'abc' })).rejects.toThrow(/Secure storage/);
-    expect(h.controller.publicState().ai.encryptionAvailable).toBe(true);
+    // The failed attempt is what tells the panel that secure storage is unavailable.
+    expect(h.controller.publicState().ai.encryptionAvailable).toBe(false);
+  });
+
+  it('a plain launch never asks the Keychain; opening Preferences does (once)', async () => {
+    const h = makeHarness();
+    live.push(h);
+    let probes = 0;
+    const real = h.secrets.available.bind(h.secrets);
+    h.secrets.available = () => {
+      probes += 1;
+      return real();
+    };
+    await h.controller.start();
+    expect(probes).toBe(0);
+    expect(h.controller.publicState().ai.encryptionAvailable).toBe(null);
+    await h.controller.action('openPreferences');
+    await vi.waitFor(() => expect(h.controller.publicState().ai.encryptionAvailable).toBe(true));
+    expect(probes).toBe(1);
+    await h.controller.action('openPreferences');
+    expect(probes).toBe(1);
   });
 
   it('publicState reports encryptionAvailable from the secrets store', async () => {
@@ -1394,7 +1414,9 @@ describe('AI provider wiring', () => {
     live.push(h);
     h.secrets.isAvailable = false;
     await h.controller.start();
-    expect(h.controller.publicState().ai.encryptionAvailable).toBe(false);
+    expect(h.controller.publicState().ai.encryptionAvailable).toBe(null);
+    await h.controller.action('openPreferences');
+    await vi.waitFor(() => expect(h.controller.publicState().ai.encryptionAvailable).toBe(false));
   });
 
   it('start() does not wait for a secure-storage probe that never answers (Keychain prompt)', async () => {
@@ -1402,7 +1424,8 @@ describe('AI provider wiring', () => {
     live.push(h);
     h.secrets.available = () => new Promise<boolean>(() => undefined);
     await h.controller.start();
-    expect(h.controller.publicState().ai.encryptionAvailable).toBe(false);
+    await h.controller.action('openPreferences');
+    expect(h.controller.publicState().ai.encryptionAvailable).toBe(null);
   });
 
   it('testAi: explains for openai, otherwise runs the gateway test with the live config and key', async () => {

@@ -52,7 +52,10 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ]);
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-app.setName('OpenTac');
+// Unpackaged runs get their own name so that their Keychain item ("OpenTac Dev Safe Storage") and
+// default userData never collide with the installed, Developer ID-signed app: a keychain item made
+// under one code signature raises a password prompt for the other (DECISIONS 2026-11-04).
+app.setName(app.isPackaged ? 'OpenTac' : 'OpenTac Dev');
 
 // A dev/test run with OPENTAC_DATA_DIR keeps Chromium's profile and the logs inside that directory
 // so it neither touches nor collides with a real installation (single-instance lock included).

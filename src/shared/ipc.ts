@@ -144,7 +144,8 @@ export interface AiPrefsPublic {
   ollamaHost: string | null;
   hasOpenRouterKey: boolean;
   hasXaiKey: boolean;
-  encryptionAvailable: boolean;
+  /** null until the Keychain has been asked (it is only asked when a key is needed or Preferences opens). */
+  encryptionAvailable: boolean | null;
 }
 
 export interface EngineInfo {

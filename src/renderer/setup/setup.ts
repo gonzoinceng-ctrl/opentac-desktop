@@ -584,7 +584,8 @@ function aiProviderSelect(): HTMLSelectElement {
 function updateAiVisibility(state: PublicState): void {
   const provider = aiProviderSelect().value;
   setHidden(byId('ai-ollama-fields'), provider !== 'ollama');
-  const available = state.ai.encryptionAvailable;
+  // null: the Keychain has not been asked yet (it is asked when Preferences opens); treat as usable.
+  const available = state.ai.encryptionAvailable !== false;
   setHidden(byId('ai-encryption'), available);
   for (const p of ['openrouter', 'xai'] as const) {
     byId<HTMLInputElement>(`key-${p}`).disabled = !available;

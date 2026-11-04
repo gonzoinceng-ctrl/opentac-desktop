@@ -71,7 +71,8 @@ npm run release             # build + dmg/zip, --publish always (manual only; CI
 Also `test:watch`, `make-icon`; mirror tests: `npm test` in `engine-mirror/`.
 Website: `site/build.mjs` builds `site/dist/` (`site:build`/`site:dev` wrap it).
 
-Dev env overrides: `OPENTAC_DATA_DIR=/tmp/gev-data` (fresh first run),
+Unpackaged runs are named "OpenTac Dev" (own Keychain item and default data dir; never collide
+with the installed app). Dev env overrides: `OPENTAC_DATA_DIR=/tmp/gev-data` (fresh first run),
 `OPENTAC_ENGINE_REMOTE`, `OPENTAC_ENGINE_REF` (point at another remote/ref for
 one run), `OPENTAC_LAUNCHER_OVERRIDE`, `OPENTAC_NODE_OVERRIDE`,
 `OPENTAC_NPM_CLI_OVERRIDE` (fakes for tests; unpackaged builds only),
