@@ -135,7 +135,21 @@ jobs:
         # The targets are named on the command line ON PURPOSE. electron-builder.yml gives each target an explicit
         # `arch: [arm64, x64]`, and that list overrides a bare `--arm64`/`--x64` (both arches get built, notarized
         # twice, and the cross-arch app gets the wrong dugite git). Naming `dmg zip` makes the CLI arch authoritative.
-        run: npx electron-builder --mac dmg zip "--${ARCH}" --publish never
+        # Apple's notarization service is eventually consistent: the first v0.1.0 run had the x64 ticket
+        # accepted and then "Failed to staple your application with code: 68" seconds later, while arm64
+        # went through. Retry the whole step (re-sign, re-submit, re-staple) up to three times with a pause;
+        # identical bits notarize quickly the second time (docs/DECISIONS.md 2026-11-04).
+        run: |
+          for attempt in 1 2 3; do
+            if npx electron-builder --mac dmg zip "--${ARCH}" --publish never; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning title=Packaging attempt ${attempt} failed::retrying in 2 minutes (notarization/stapling is eventually consistent)"
+              rm -rf release
+              sleep 120
+            fi
+          done
+          echo "::error title=Packaging failed::three attempts failed; see the log above"
+          exit 1
 
       - name: Remove App Store Connect API key
         if: always()

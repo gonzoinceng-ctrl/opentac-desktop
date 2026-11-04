@@ -21,7 +21,7 @@ publishes it.
    ```
    The `preflight` job fails the run if the tag is not `v` + the `package.json` version.
    To rebuild an existing tag without re-pushing it: Actions, "Release", "Run workflow", enter the tag.
-4. **CI builds the draft** (`.github/workflows/release.yml`; roughly 20 to 40 minutes, notarization is the slow part):
+4. **CI builds the draft** (`.github/workflows/release.yml`; roughly 20 to 40 minutes, notarization is the slow part; the packaging step retries up to three times because Apple's ticket service is eventually consistent, see DECISIONS 2026-11-04):
    - `build` runs twice in parallel on native runners: `macos-15` (arm64) and `macos-15-intel` (x64). Each job runs `npm ci`,
      `npm run fetch-node`, `npm run make-icon`, `npm run build`, then `electron-builder --mac dmg zip --<arch> --publish never` (targets are named on the command line because the explicit `arch` lists in `electron-builder.yml` would otherwise make each runner build both architectures), then
      `scripts/verify-bundle.sh` and `scripts/verify-notarized.sh` (which also mounts the `.dmg` and checks the app inside it).
