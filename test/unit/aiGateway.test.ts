@@ -33,6 +33,7 @@ function extractOpenAiResponseText(data: any): string {
     .trim();
 }
 
+const TEST_TOKEN = 'test-gateway-token';
 const PLACEHOLDER = 'opentac-gateway-placeholder';
 const SUMMARY_JSON = '{"summary":"Eiffel Tower Paris","feedState":null}';
 const INSTRUCTIONS = 'SECRET-INSTRUCTIONS-TEXT write a summary';
@@ -98,7 +99,7 @@ async function harness(
     apiKey: null,
     ...cfg,
   };
-  const gw = createAiGateway({ getConfig: () => config, log, endpoints });
+  const gw = createAiGateway({ getConfig: () => config, log, endpoints, authToken: TEST_TOKEN });
   gateways.push(gw);
   const { url } = await gw.start();
   return {
@@ -111,6 +112,7 @@ async function harness(
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${PLACEHOLDER}`,
+          'x-opentac-gateway-token': TEST_TOKEN,
           ...headers,
         },
         body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -291,7 +293,10 @@ describe('gateway server', () => {
     const h = await harness({ provider: 'openrouter' });
     const health = await fetch(`${h.url}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, provider: 'openrouter' });
+    // No token: bare liveness only, no provider name (SEC-02).
+    expect(await health.json()).toEqual({ ok: true });
+    const authed = await fetch(`${h.url}/healthz`, { headers: { 'x-opentac-gateway-token': TEST_TOKEN } });
+    expect(await authed.json()).toEqual({ ok: true, provider: 'openrouter' });
     expect((await fetch(`${h.url}/nope`)).status).toBe(404);
     expect((await fetch(`${h.url}/v1/responses`)).status).toBe(404);
     expect(
@@ -318,7 +323,7 @@ describe('gateway server', () => {
     const head = await new Promise<string>((resolve, reject) => {
       const sock = connect(port, '127.0.0.1', () => {
         sock.write(
-          'POST /v1/responses HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2000000\r\nConnection: close\r\n\r\n',
+          `POST /v1/responses HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nx-opentac-gateway-token: ${TEST_TOKEN}\r\nContent-Length: 2000000\r\nConnection: close\r\n\r\n`,
         );
       });
       let buf = '';
@@ -739,6 +744,7 @@ describe('testPrompt', () => {
     const gw = createAiGateway({
       getConfig: () => ({ provider: 'openrouter', model: null, ollamaHost: null, apiKey: null }),
       log,
+      authToken: TEST_TOKEN,
     });
     gateways.push(gw);
     expect(gw.url()).toBeNull();
@@ -763,6 +769,7 @@ describe('testPrompt', () => {
     const gw = createAiGateway({
       getConfig: () => ({ provider: 'ollama', model: 'm', ollamaHost: slow.url, apiKey: null }),
       log,
+      authToken: TEST_TOKEN,
     });
     gateways.push(gw);
     const r = await gw.testPrompt({
@@ -788,6 +795,12 @@ describe('AiGatewayError', () => {
 });
 
 describe('gateway auth token', () => {
+  it('refuses to be created without a token', () => {
+    const getConfig = (): AiGatewayConfig => ({ provider: 'ollama', model: 'm', ollamaHost: null, apiKey: null });
+    expect(() => createAiGateway({ getConfig, log } as never)).toThrow(/authToken/);
+    expect(() => createAiGateway({ getConfig, log, authToken: '' })).toThrow(/authToken/);
+  });
+
   it('rejects /v1/responses without the per-launch token and accepts it with the token', async () => {
     const ollama = await backend((_req: unknown, res: any) => replyJson(res, 200, chatReply(SUMMARY_JSON)));
     const gw = createAiGateway({

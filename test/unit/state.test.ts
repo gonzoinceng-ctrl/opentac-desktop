@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { defaultState, loadState, saveState, updateState, validateState } from '../../src/main/state.js';
+import { defaultState, loadState, loadStateReport, saveState, updateState, validateState } from '../../src/main/state.js';
 import { DEFAULT_REMOTE_URL } from '../../src/shared/types.js';
 
 let dir: string;
@@ -33,7 +33,7 @@ describe('defaultState', () => {
     expect(s.remoteUrl).toBe(DEFAULT_REMOTE_URL);
     expect(DEFAULT_REMOTE_URL).toBe('https://github.com/gonzoinceng-ctrl/opentac-engine.git');
     expect(s.updateCheckOnLaunch).toBe(true);
-    expect(s.ai).toEqual({ provider: 'ollama', model: 'qwen3.5:9b-mlx', ollamaHost: null });
+    expect(s.ai).toEqual({ provider: 'openai', model: null, ollamaHost: null });
     expect(s.usbDevices).toEqual([]);
     expect(s.mainWindowBounds).toBeNull();
     expect(defaultState().usbDevices).not.toBe(s.usbDevices);
@@ -91,9 +91,29 @@ describe('loadState / saveState', () => {
     const bad = JSON.stringify({ schemaVersion: 2, channel: 'candidate' });
     await writeFile(file, bad);
     const log = makeLog();
-    expect(await loadState(file, backup, log)).toEqual(defaultState());
+    // The damaged file is kept as a backup, and the update channel is salvaged from it (FD-07).
+    expect(await loadState(file, backup, log)).toEqual({ ...defaultState(), channel: 'candidate' });
     expect(await readFile(backup, 'utf8')).toBe(bad);
     expect(log.warn.mock.calls[0]?.[0]).toContain('schemaVersion');
+  });
+
+  it('salvages the port and channel from text that is not valid JSON, and reports the reset', async () => {
+    await writeFile(file, '{ "channel": "upstream", "lastPort": 4211, "ai": { broken');
+    const log = makeLog();
+    const report = await loadStateReport(file, backup, log);
+    expect(report.reset).toBe(true);
+    expect(report.state.lastPort).toBe(4211);
+    expect(report.state.channel).toBe('upstream');
+    expect(report.salvaged).toEqual(['update channel', 'port']);
+    expect(await readFile(backup, 'utf8')).toContain('broken');
+  });
+
+  it('reports nothing for a good file or a missing one', async () => {
+    expect((await loadStateReport(file, backup, makeLog())).reset).toBe(false);
+    await saveState(file, defaultState());
+    const good = await loadStateReport(file, backup, makeLog());
+    expect(good.reset).toBe(false);
+    expect(good.salvaged).toEqual([]);
   });
 
   it('fills a partial file from defaults', async () => {

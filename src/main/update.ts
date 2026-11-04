@@ -39,6 +39,8 @@ export interface UpdateManagerDeps {
   /** Remote the checkout follows right now (state value or the CI override). */
   remoteUrl: () => string;
   channel: () => Channel;
+  /** One-run remote (OPENTAC_ENGINE_REMOTE) to fetch from instead of the checkout's origin. */
+  fetchRemoteOverride?: string | undefined;
   /** OPENTAC_ENGINE_REF-style override of the channel resolution. */
   refOverride?: string | undefined;
 }
@@ -107,6 +109,8 @@ export interface DisclosureInput {
   /** Annotation of the target's `stable-*` tag, when it has one. */
   annotation: TagAnnotation | null;
   appVersion: string;
+  /** Commits removed when the move goes back to an older version. */
+  removedCommits?: number;
 }
 
 function nonEmpty(v: string | undefined): string | null {
@@ -144,7 +148,11 @@ export function buildDisclosure(input: DisclosureInput): Disclosure {
     commits,
     diffStat: input.diffStat,
     lockfileChanged: input.lockfileChanged,
-    compareUrl: compareUrlFor(input.remoteUrl, input.from.commit, input.to.commit),
+    // A move back to an older version has nothing useful to compare on GitHub.
+    compareUrl:
+      !input.status.isAncestor && input.status.behind === 0
+        ? null
+        : compareUrlFor(input.remoteUrl, input.from.commit, input.to.commit),
     dirty: {
       modified: [...input.status.dirty.modified],
       untracked: [...input.status.dirty.untracked],
@@ -162,6 +170,7 @@ export function buildDisclosure(input: DisclosureInput): Disclosure {
     minShell,
     severity: fields['severity'] === 'security' ? 'security' : 'normal',
     blockedByShell: isShellTooOld(minShell, input.appVersion),
+    ...(input.removedCommits !== undefined ? { removedCommits: input.removedCommits } : {}),
   };
 }
 
@@ -200,7 +209,8 @@ export function createUpdateManager(deps: UpdateManagerDeps): UpdateManager {
       const sha = refs[ref] ?? (deps.refOverride !== undefined ? Object.values(refs)[0] : undefined);
       return { equal: sha !== undefined && sha === headSha };
     } catch (err) {
-      if (isNetwork(err)) return { offline: true };
+      // A timeout is as good as offline: a full fetch would only wait longer for the same dead host.
+      if (isNetwork(err) || (err instanceof GitError && err.code === 'GIT_TIMEOUT')) return { offline: true };
       log.warn(`ls-remote failed, falling back to a full fetch: ${err instanceof Error ? err.message : String(err)}`);
       return { equal: false };
     } finally {
@@ -221,7 +231,9 @@ export function createUpdateManager(deps: UpdateManagerDeps): UpdateManager {
 
     const stopFetch = log.time('fetch');
     try {
-      await checkout.fetch();
+      await checkout.fetch(
+        deps.fetchRemoteOverride !== undefined ? { remoteUrl: deps.fetchRemoteOverride } : {},
+      );
     } catch (err) {
       if (isNetwork(err)) return { kind: 'offline' };
       if (err instanceof GitError && err.code === 'TAG_DRIFT') {
@@ -238,12 +250,15 @@ export function createUpdateManager(deps: UpdateManagerDeps): UpdateManager {
       return { kind: 'up-to-date', label: labelFor(target) };
     }
 
-    const [fromLabel, commitLog, diffStat, lockfileChanged, annotation] = await Promise.all([
+    const [fromLabel, commitLog, diffStat, lockfileChanged, annotation, removed] = await Promise.all([
       labelOfHead(status.head),
       checkout.commitLog(status.head, target.commit, DISCLOSURE_COMMIT_LIMIT),
       checkout.diffStat(status.head, target.commit),
       checkout.lockfileChanged(status.head, target.commit),
       target.stableTag !== null ? checkout.tagAnnotation(target.stableTag) : Promise.resolve(null),
+      !status.isAncestor && status.behind === 0
+        ? checkout.countCommits(target.commit, status.head).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     const disclosure = buildDisclosure({
@@ -257,6 +272,7 @@ export function createUpdateManager(deps: UpdateManagerDeps): UpdateManager {
       lockfileChanged,
       annotation,
       appVersion,
+      ...(removed !== null ? { removedCommits: removed } : {}),
     });
 
     if (disclosure.blockedByShell) {

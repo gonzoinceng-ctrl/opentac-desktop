@@ -40,6 +40,25 @@ export const REDACTION_PATTERNS: readonly RedactionPattern[] = [
     replacement: redactSecretAssignment,
   },
   {
+    // JSON ("apiKey":"..."), header (x-api-key: ..., Authorization: ...) and colon forms.
+    // The scheme of an Authorization value (Bearer/Basic) is kept so the log still says which.
+    name: 'header-or-json-secret',
+    regex:
+      /(?<![A-Za-z0-9])(["']?)((?:api[-_]?key|apikey|authorization|x-[a-z0-9-]{0,40}token|x-[a-z0-9-]{0,40}key|secret|password|passwd|access[-_]?token|refresh[-_]?token))\1([ \t]*[:=][ \t]*)(["']?)((?:Bearer[ \t]+|Basic[ \t]+)?)([^\s"',;&}]{4,})/gi,
+    replacement: (_m, q1, key, sep, q2, scheme) => `${q1}${key}${q1}${sep}${q2}${scheme}${REDACTED}`,
+  },
+  {
+    name: 'firms-key-in-path',
+    // NASA FIRMS puts the 32-hex map key in the URL path: /api/area/csv/<key>/VIIRS_...
+    regex: /(\/csv\/)[A-Fa-f0-9]{32}(?=\/|\b)/g,
+    replacement: `$1${REDACTED}`,
+  },
+  {
+    name: 'mapillary-token',
+    regex: /\bMLY\|\d+\|[A-Za-z0-9]{16,}/g,
+    replacement: REDACTED,
+  },
+  {
     name: 'bearer-token',
     regex: /\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi,
     replacement: `$1${REDACTED}`,
@@ -96,4 +115,15 @@ export function redact(text: string): string {
         : out.replace(regex, replacement);
   }
   return out;
+}
+
+/**
+ * Replaces the user's home directory in paths with `~` so pasted diagnostics do not carry the
+ * macOS account name. `home` is passed in because this module must not import Node builtins.
+ */
+export function redactHomeDir(text: string, home: string): string {
+  const h = home.replace(/\/+$/, '');
+  if (h === '' || h === '/') return text;
+  const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`${escaped}(?![A-Za-z0-9_.-])`, 'g'), '~');
 }

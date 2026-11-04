@@ -62,6 +62,7 @@ publishes it.
   The same file is read by CI and by the engine mirror's gate.
 - **Electron, electron-builder, electron-updater, dugite:** change the exact pin in `package.json`, `npm install`, then
   `npm run typecheck`, `npx vitest run`, `npm run e2e`, `npm run pack` and `scripts/verify-bundle.sh`; note it in `docs/DECISIONS.md`.
+  `npm run pack` output has no `app-update.yml` (only `npm run dist` dmg/zip builds write it), so shell auto-update can only be tested from a `dist` build or the draft release.
   Dependabot (weekly) proposes routine npm and Actions bumps and ignores Electron, TypeScript and @types/node majors.
 
 Run the check locally with `node scripts/check-toolchain-updates.mjs` (exit code 2 means "update available").
@@ -69,6 +70,8 @@ Run the check locally with `node scripts/check-toolchain-updates.mjs` (exit code
 ## Secrets and how to produce them
 
 Set these in the app repo (Settings, Secrets and variables, Actions) or with `gh secret set NAME --repo gonzoinceng-ctrl/opentac-desktop`.
+
+Shortcut: `bash scripts/owner-setup.sh secrets` reads every value from 1Password (desktop app session, Personal vault) and pipes it straight into `gh secret set`, including the mirror's `ENGINE_PUSH_TOKEN`; `bash scripts/owner-setup.sh dns` repoints opentac.icu to the Pages site. Nothing is printed or written to disk.
 Never commit them; `.gitignore` already excludes `*.p12` and `*.p8`.
 
 | Secret | Used by | How to produce it |

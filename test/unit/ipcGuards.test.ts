@@ -107,6 +107,8 @@ describe('payload guards used by the handlers', () => {
     expect(isSetAiPayload({ provider: 'ollama', model: 'qwen3:8b', ollamaHost: 'http://127.0.0.1:11434' })).toBe(true);
     expect(isSetAiPayload({ provider: 'nope', model: null, ollamaHost: null })).toBe(false);
     expect(isSetAiPayload({ provider: 'openai', model: null, ollamaHost: 'ftp://x' })).toBe(false);
+    expect(isSetAiPayload({ provider: 'ollama', model: null, ollamaHost: 'http://user:pw@host:11434' })).toBe(false);
+    expect(isSetAiPayload({ provider: 'ollama', model: null, ollamaHost: 'http://evil@127.0.0.1' })).toBe(false);
     expect(isSetAiPayload({ provider: 'openai', model: null, ollamaHost: null, extra: 1 })).toBe(false);
   });
   it('isSetAiKeyPayload', () => {

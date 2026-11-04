@@ -124,6 +124,8 @@ export interface Disclosure {
   severity: 'normal' | 'security';
   /** Set when minShell > app version: the panel says "Update OpenTac first". */
   blockedByShell: boolean;
+  /** For a move to an older version: how many commits are removed (capped at the list limit). */
+  removedCommits?: number;
 }
 
 export interface Progress {
@@ -156,6 +158,8 @@ export interface EngineInfo {
 
 export interface Versions {
   app: string;
+  /** True in the installed (packaged) app; false under `electron .`. */
+  packaged: boolean;
   electron: string;
   chromium: string;
   bundledNode: string;
@@ -256,6 +260,8 @@ export interface PublicState {
   preferencesOpen: boolean;
   /** True while the About panel should be shown. */
   aboutOpen: boolean;
+  /** True while an update is being rolled back (including the reinstall it needs). */
+  rollingBack?: boolean;
 }
 
 export interface AiTestResultPublic {
@@ -306,6 +312,8 @@ export const IPC = {
   getVersions: 'opentac:getVersions',
   openExternal: 'opentac:openExternal',
   openLogsFolder: 'opentac:openLogsFolder',
+  /** One-way (ipcRenderer.send) from the engine page only: Cesium's render-error overlay appeared. */
+  renderError: 'opentac:renderError',
   getState: 'opentac:getState',
   action: 'opentac:action',
   setPrefs: 'opentac:setPrefs',
@@ -400,7 +408,7 @@ export function isSetAiPayload(v: unknown): v is SetAiPayload {
     s === null || (typeof s === 'string' && s.length <= max && !/[\u0000-\u001f]/.test(s));
   if (!okStr(model, 200)) return false;
   if (!okStr(host, 300)) return false;
-  if (typeof host === 'string' && host !== '' && !/^https?:\/\/[^\s/]+(?::\d{1,5})?\/?$/.test(host)) {
+  if (typeof host === 'string' && host !== '' && !/^https?:\/\/[^\s/@]+(?::\d{1,5})?\/?$/.test(host)) {
     return false;
   }
   return Object.keys(v).every((k) => k === 'provider' || k === 'model' || k === 'ollamaHost');

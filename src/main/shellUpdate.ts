@@ -3,6 +3,9 @@
  * (docs/SHELL-DESIGN.md section 4). This is separate from the engine (God's Eye View) updates:
  * every string here says "OpenTac" or "the app", never "engine".
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { ShellUpdaterApi, ShellUi } from './contracts.js';
 import type { Logger } from './logger.js';
 
@@ -11,6 +14,11 @@ export interface ShellUpdaterOptions {
   ui: Pick<ShellUi, 'confirm' | 'notify'>;
   log: Logger;
   isPackaged: boolean;
+  /**
+   * True when the app carries its electron-updater feed config (`Resources/app-update.yml`, written
+   * by dmg/zip builds only). Defaults to looking for that file next to the app.
+   */
+  hasUpdateConfig?: () => boolean;
   /** Stops the engine and flushes state; awaited before quitAndInstall. */
   beforeQuitAndInstall: () => Promise<void>;
 }
@@ -37,6 +45,18 @@ async function loadUpdater(): Promise<UpdaterLike> {
   };
   const { autoUpdater } = mod.default;
   return autoUpdater;
+}
+
+/** Shown when this build cannot update itself (dev run, or a `--dir` pack without a feed file). */
+export const APP_UPDATES_UNAVAILABLE = {
+  title: 'App updates are not available here',
+  message: 'App updates are only available in the installed release build of OpenTac.',
+  detail: 'This copy was not installed from an OpenTac release. Download the latest release from the OpenTac website to get updates.',
+} as const;
+
+function defaultHasUpdateConfig(): boolean {
+  const res = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  return res !== undefined && existsSync(join(res, 'app-update.yml'));
 }
 
 /** Creates the app updater. Inactive (check() only logs) when the app is not packaged. */
@@ -112,8 +132,14 @@ export function createShellUpdater(opts: ShellUpdaterOptions): ShellUpdaterApi {
 
   return {
     async check({ interactive }) {
-      if (!opts.isPackaged) {
-        log.info('app update check skipped (unpackaged)');
+      const hasConfig = opts.hasUpdateConfig ?? defaultHasUpdateConfig;
+      if (!opts.isPackaged || !hasConfig()) {
+        log.info(
+          opts.isPackaged
+            ? 'app update check skipped: this build has no app-update.yml (not a release install)'
+            : 'app update check skipped (unpackaged)',
+        );
+        if (interactive) await opts.ui.notify({ ...APP_UPDATES_UNAVAILABLE }).catch(() => undefined);
         return;
       }
       if (busy) {

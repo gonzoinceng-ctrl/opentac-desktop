@@ -124,6 +124,24 @@ test('the setup window is hidden while RUNNING', async () => {
     .toEqual({ setupCount: 1, setupHidden: true, engineCount: 1, engineVisible: true });
 });
 
+test('the menus carry Close Window and the reworded engine reset (DU-03, FD-02)', async () => {
+  const labels = await app.evaluate(({ Menu }) => {
+    const out: string[] = [];
+    const walk = (items: Electron.MenuItem[], path: string): void => {
+      for (const item of items) {
+        out.push(`${path}/${item.role ?? ''}:${item.label}`);
+        if (item.submenu !== undefined && item.submenu !== null) walk(item.submenu.items, `${path}/${item.label}`);
+      }
+    };
+    const menu = Menu.getApplicationMenu();
+    if (menu !== null) walk(menu.items, '');
+    return out;
+  });
+  expect(labels.some((l) => l.startsWith('/Window/') && l.includes('close:'))).toBe(true);
+  expect(labels.some((l) => l.endsWith('Download Engine Again…'))).toBe(true);
+  expect(labels.some((l) => l.includes('Reset to Upstream'))).toBe(false);
+});
+
 test('window.open to https goes to the system browser, not a new window', async () => {
   const before = app.windows().length;
   await main.evaluate(() => {
@@ -195,11 +213,13 @@ test('Preferences > API keys lists the engine registry and saving a key marks it
 
   const setup = await findWindow((u) => u.startsWith('app://'), 10_000);
   await expect(setup.locator('#panel-preferences')).toBeVisible({ timeout: 15_000 });
+  // The credit to the upstream author is a working link (FR-3).
+  await expect(setup.locator('#attribution a')).toHaveAttribute('href', 'https://github.com/bilawalsidhu/gods-eye-view');
   await setup.locator('#tab-keys').click();
   await expect(setup.locator('#tabpanel-keys')).toBeVisible();
 
   // The rows come from the fake engine's /api/setup/status (two keys), not from the static catalogue.
-  await expect(setup.locator('#keys-summary')).toHaveText('0 of 2 keys are set.', { timeout: 15_000 });
+  await expect(setup.locator('#keys-summary')).toHaveText('0 of 2 keys set.', { timeout: 15_000 });
   const row = setup.locator('[data-key-id="aisstream"]');
   await expect(row).toBeVisible();
   await expect(row).toHaveAttribute('data-state', 'unset');
@@ -209,7 +229,9 @@ test('Preferences > API keys lists the engine registry and saving a key marks it
 
   await expect(row).toHaveAttribute('data-state', 'set', { timeout: 15_000 });
   await expect(row.locator('[data-role="state"]')).toHaveText('Set');
-  await expect(setup.locator('#keys-summary')).toHaveText('1 of 2 keys are set.', { timeout: 15_000 });
+  // The row's message starts as "restarting" and ends as "has restarted" once the key list sees the engine again.
+  await expect(row.locator('[data-role="status"]')).toContainText('Saved.');
+  await expect(setup.locator('#keys-summary')).toHaveText('1 of 2 keys set.', { timeout: 15_000 });
   // The engine restarts itself without exiting: the app must not have gone to CRASHED.
   expect(main.url()).toMatch(ENGINE_URL);
   await expect(setup.locator('#panel-crash')).toBeHidden();

@@ -1,8 +1,18 @@
 # Production readiness — status against `docs/brief/05-PRODUCTION-READINESS.md`
 
-Updated 2026-11-03. Three states: **done** (proven on this machine or by tests in the repo),
+Updated 2026-11-04. Three states: **done** (proven on this machine or by tests in the repo),
 **pending-owner** (needs an account, credential, hardware or wall-clock only the owner has),
 **pending-CI** (wired up, proven locally where possible, but not yet executed on GitHub).
+
+## End-to-end audit (2026-11-04)
+
+| Item | State |
+|---|---|
+| Audit of the whole app, first run to failure drills, packaging and the website | **done**: 86 findings, **0 blockers** |
+| Fixes for the findings | **done** in the shell and the docs (details in `docs/DECISIONS.md`, "audit fixes in the shell"): default summary provider is now OpenAI, damaged `state.json` is salvaged, crash recovery is quieter and explained, a damaged engine folder gets the right panel, update checks on a dead network time out in about 30 s, rollback wording and skipped-version marking, Preferences stays open through restarts, engine settings are validated at the field, the globe reloads itself after Cesium's render halt |
+| Not fixed on purpose | compact API key rows and collapsible engine setting groups (partly addressed by sticky tabs and the Done button); skipping the dependency reinstall after a state reset when the checkout is intact |
+| Not yet verified on a real machine | the low-disk-space panel (`docs/QA.md` 7.13, 7.14); the shell auto-update path (needs a `dist` build, not `npm run pack`) |
+| Still owner-side | DNS for opentac.icu; GitHub secrets for signing and notarization; the push token for the engine mirror (all listed below). One command does all three: `bash scripts/owner-setup.sh` (reads 1Password, prints no values). |
 
 ## Needs a human (owner)
 
@@ -62,7 +72,7 @@ Fresh-Mac open test and x64-under-Intel test: pending-owner.
 |---|---|
 | Mirror has zero engine commits of its own | done by design + `selfcheck.yml` |
 | Two consecutive weekly intakes green; one deliberate contract break; one forced promote | pending-owner / pending-CI (contract breaks are proven by 33 local tests; the weekly soak needs calendar time) |
-| Disclosure shows gate run + canary days on `stable`; untested banner elsewhere | done (renderer + update manager tests) |
+| Disclosure shows gate run + canary days on `stable` (the canary is a 72-hour trial period where a new engine version is run and checked before it is promoted to everyone); untested banner elsewhere | done (renderer + update manager tests) |
 | Engine update: disclosure, ff, conditional reinstall, restart, reload | done (integration `update-flow` + e2e test 4 against the fixture mirror); manual against the real mirror pending-owner |
 | Dirty tree blocks ff; Reset preserves `.env` and `.gev-cache` | done (integration tests) |
 | Rollback after failed post-update start | done (integration test with `OPENTAC_FAIL_START_ONCE`) |
@@ -78,7 +88,7 @@ Fresh-Mac open test and x64-under-Intel test: pending-owner.
 |---|---|
 | ERROR panels: plain message, raw line, Retry / Show Logs / Reset | done (`errors.ts` mapping, 34 tests; renderer) |
 | Crash-loop guard: one auto-restart per 60 s | done (unit tests) |
-| Corrupt `state.json` → `.bak` + defaults | done (unit tests) |
+| Corrupt `state.json` → `.bak` + defaults, with channel, port, summary provider and app settings salvaged where valid, and a one-time notice | done (unit tests) |
 | Disk-space check before clone/install | done (`DISK_SPACE` error when < 2 GB and a clone/install is needed) |
 | Timeouts on every git/npm/readiness operation | done (every runner has a timeout; tested) |
 
@@ -95,12 +105,12 @@ Fresh-Mac open test and x64-under-Intel test: pending-owner.
 
 | Item | State |
 |---|---|
-| Default OpenAI path leaves engine network calls untouched | done (gateway and interceptor only exist when a non-OpenAI provider is selected; unit tests) |
+| Default OpenAI path (the default for new installs) leaves engine network calls untouched | done (gateway and interceptor only exist when an opt-in non-OpenAI provider is selected; unit tests) |
 | Ollama / OpenRouter / xAI summaries work; keys encrypted locally | done (gateway tests against mock backends; live Ollama verified during validation); OpenRouter/xAI live test pending-owner keys |
 | UI and website say voice is OpenAI/Gemini only | done |
 | Upstream PR for `OPENAI_BASE_URL` | pending-owner (needs the owner's GitHub identity; a draft patch is a follow-up) |
 
 ## Documentation
 
-`README.md`, `THIRD_PARTY_NOTICES.md`, `docs/DECISIONS.md`, `docs/QA.md` (111 steps, unticked), `docs/RELEASE.md`,
+`README.md`, `THIRD_PARTY_NOTICES.md`, `docs/DECISIONS.md`, `docs/QA.md` (125 steps, unticked), `docs/RELEASE.md`,
 `docs/DATA-DIR.md`, `docs/TROUBLESHOOTING.md`, `docs/SHELL-DESIGN.md`, `CLAUDE.md`: done. `docs/QA.md` execution: pending-owner.

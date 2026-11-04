@@ -75,6 +75,7 @@ Dev env overrides: `OPENTAC_DATA_DIR=/tmp/gev-data` (fresh first run),
 `OPENTAC_ENGINE_REMOTE`, `OPENTAC_ENGINE_REF` (point at another remote/ref for
 one run), `OPENTAC_LAUNCHER_OVERRIDE`, `OPENTAC_NODE_OVERRIDE`,
 `OPENTAC_NPM_CLI_OVERRIDE` (fakes for tests; unpackaged builds only),
+`OPENTAC_E2E_NO_EXTERNAL=1` (logs instead of opening external links; unpackaged builds only),
 `OPENTAC_FAIL_START_ONCE=1` (consumed by the first server start made while
 `rollbackCommit` is set, i.e. an update apply or a staged marker; passed to
 that one spawn then stripped; a plain launch ignores it).
@@ -158,7 +159,8 @@ that one spawn then stripped; a plain launch ignores it).
   missing. We log it; we do not block on it.
 - `vite` is a devDependency upstream but required at runtime. `npm ci` must
   install devDependencies.
-- With a non-OpenAI summary provider the engine's OpenAI key row is locked:
+- The default summary provider for new installs is OpenAI (no gateway, the engine's OpenAI key row is editable); Ollama, OpenRouter and xAI are opt-in.
+- With a non-OpenAI summary provider chosen the engine's OpenAI key row is locked:
   the launcher passes a placeholder `OPENAI_API_KEY` and upstream treats env
   keys as "external". Intentional; documented in `docs/TROUBLESHOOTING.md`.
 - Readiness is the `[OpenTac] Ready at http://127.0.0.1:PORT/` line only;

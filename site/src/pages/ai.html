@@ -11,17 +11,15 @@ current: ai
     <h1>AI options</h1>
     <p class="lead">OpenTac does two separate AI jobs, and they have different provider choices. Voice control is not fully local, and OpenTac does not pretend otherwise.</p>
 
-    <div class="grid">
-      <section class="tile">
-        <h2>Summaries</h2>
+    <div class="grid" role="list" aria-label="At a glance">
+      <div class="tile" role="listitem">
+        <p class="tile-label">Summaries</p>
         <p><strong>OpenAI</strong> (default), <strong>Ollama</strong>, <strong>OpenRouter</strong> or <strong>xAI</strong>.</p>
-        <p>The short text summaries in the heads-up display can go to any of these. Choose in OpenTac's Preferences.</p>
-      </section>
-      <section class="tile">
-        <h2>Voice control</h2>
+      </div>
+      <div class="tile" role="listitem">
+        <p class="tile-label">Voice control</p>
         <p><strong>OpenAI or Gemini only.</strong></p>
-        <p>Voice runs through the globe's own panel and your own key. OpenTac never reroutes it.</p>
-      </section>
+      </div>
     </div>
 
     <div class="prose">

@@ -8,6 +8,12 @@ import type { SettingDef } from '../../src/shared/engineSettingsCatalog.js';
 import {
   APP_NEXT_LAUNCH_NOTE,
   ATTRIBUTION,
+  disclosureHeading,
+  elapsedLabel,
+  isDowngrade,
+  showsElapsed,
+  visibleLogLines,
+  warningActive,
   ENGINE_SETTINGS_RESTARTING,
   ENGINE_SETTINGS_RESTART_NOTE,
   LOG_LEVEL_OPTIONS,
@@ -53,6 +59,24 @@ import {
   untestedBanner,
   usbDeviceDetail,
   usbDeviceTitle,
+  LICENSES_URL,
+  LOCKFILE_NOTE,
+  formatCount,
+  formatDiffStat,
+  gpuSummary,
+  groupSaveLabel,
+  keyFieldLabel,
+  keyPlaceholder,
+  keyRestartedMessage,
+  launchAtLoginAvailable,
+  newLogLines,
+  nextProgressReason,
+  parseAiTestReply,
+  plainErrorDetail,
+  plainErrorMessage,
+  plainErrorTitle,
+  plainProxyReason,
+  progressSubLine,
 } from '../../src/renderer/setup/view.js';
 
 function disclosure(over: Partial<Disclosure> = {}): Disclosure {
@@ -122,9 +146,9 @@ describe('phaseTitle and phaseNote', () => {
   });
 
   it('gives honest first-run copy for cloning and installing', () => {
-    expect(phaseNote('CLONING')).toContain('~200 MB');
-    expect(phaseNote('CLONING')).toContain('~400 MB');
-    expect(phaseNote('CLONING')).toContain('GitHub and npm');
+    expect(phaseNote('CLONING')).toContain('about 200 MB');
+    expect(phaseNote('CLONING')).toContain('about 400 MB on disk');
+    expect(phaseNote('CLONING')).toContain('GitHub');
     expect(phaseNote('INSTALLING')).toContain('npm');
     expect(phaseNote('RUNNING')).toBeNull();
   });
@@ -183,6 +207,8 @@ describe('disclosure formatting', () => {
     expect(formatDisclosureSummary(disclosure())).toBe('From v0.3.0 to stable-2026.11.01: 12 commits');
     expect(formatDisclosureSummary(disclosure({ commitCount: 1 }))).toBe('From v0.3.0 to stable-2026.11.01: 1 commit');
     expect(formatCommitCount(50, true)).toBe('50 commits (list shortened)');
+    expect(formatCommitCount(812, true, 200)).toBe('showing the newest 200 of 812 commits');
+    expect(formatCommitCount(1500, false)).toBe('1,500 commits');
   });
 
   it('builds the stable gate line', () => {
@@ -293,7 +319,13 @@ describe('static html', () => {
   });
 
   it('carries the attribution line and the two fixed AI caveats', () => {
-    expect(index).toContain(ATTRIBUTION);
+    // The credit line is plain text with a link on the project name (FR-3), in the header and in About.
+    const text = index.replace(/<a [^>]*>([^<]*)<\/a>/g, '$1');
+    // Shown once, in the header strip that every panel (About included) sits under.
+    expect(text.split(ATTRIBUTION).length - 1).toBe(1);
+    const links = index.match(/<a href="https:\/\/github\.com\/bilawalsidhu\/gods-eye-view" data-external>/g) ?? [];
+    expect(links).toHaveLength(1);
+    expect(index).toContain('id="btn-upstream"');
     expect(index).toContain(VOICE_CAVEAT);
     expect(index).toContain(KEY_LOCK_CAVEAT);
   });
@@ -365,7 +397,7 @@ describe('Preferences tabs', () => {
 
   it('the OpenRouter and xAI keys sit in the API keys tab under their own heading', () => {
     const keys = index.slice(index.indexOf('id="tabpanel-keys"'), index.indexOf('id="tabpanel-ai"'));
-    expect(keys).toContain('OpenTac AI summaries');
+    expect(keys).toContain('Summary provider keys');
     expect(keys).toContain('id="key-openrouter"');
     expect(keys).toContain('id="key-xai"');
     expect(keys).toContain('id="keys-list"');
@@ -451,8 +483,8 @@ describe('API key rows', () => {
     expect(keyTitle('CESIUM ION')).toBe('Cesium ion');
     expect(keyTitle('LAUNCH LIBRARY')).toBe('Launch Library');
     expect(keyTitle('GOOGLE MAPS — SERVER')).toBe('Google Maps — Server');
-    expect(keyInputLabel(keyRow(), 'AISSTREAM_API_KEY')).toBe('AISSTREAM key (AISSTREAM_API_KEY)');
-    expect(keyInputLabel(keyRow({ envVars: ['A_ID', 'A_SECRET'] }), 'A_SECRET')).toBe('AISSTREAM A_SECRET');
+    expect(keyInputLabel(keyRow(), 'AISSTREAM_API_KEY')).toBe('AISStream key');
+    expect(keyInputLabel(keyRow({ title: 'OPENSKY', envVars: ['OPENSKY_CLIENT_ID', 'OPENSKY_CLIENT_SECRET'] }), 'OPENSKY_CLIENT_SECRET')).toBe('OpenSky client secret');
   });
 
   it('splits advanced rows and summarises', () => {
@@ -467,12 +499,16 @@ describe('API key rows', () => {
     const { main, advanced } = splitKeyRows(list);
     expect(main.map((k) => k.id)).toEqual(['aisstream']);
     expect(advanced.map((k) => k.id)).toEqual(['google-maps-server']);
-    expect(keysSummary(list)).toBe('3 of 10 keys are set.');
+    expect(keysSummary(list)).toBe('3 of 10 keys set.');
+    // The OpenAI row is only "set" by a locked placeholder while another summary provider is active (SET-05).
+    const withPlaceholder = { ...list, setCount: 1, keys: [{ id: 'openai', set: true, managed: 'external' as const }] };
+    expect(keysSummary(withPlaceholder, true)).toBe('0 of 10 keys set.');
+    expect(keysSummary(withPlaceholder, false)).toBe('1 of 10 keys set.');
   });
 
   it('result messages are sentences and never echo a value', () => {
     expect(keyResultMessage({ ok: true, restarting: true, code: null, message: null }, 'saved')).toContain('restarting itself');
-    expect(keyResultMessage({ ok: true, restarting: true, code: null, message: null }, 'removed')).toContain('Key removed');
+    expect(keyResultMessage({ ok: true, restarting: true, code: null, message: null }, 'removed')).toContain('Removed.');
     expect(keyResultMessage({ ok: false, restarting: false, code: 'locked', message: 'Locked: switch back.' }, 'saved')).toBe('Locked: switch back.');
     expect(keyResultMessage({ ok: false, restarting: false, code: 'x', message: null }, 'saved')).toBe('The key was not saved.');
   });
@@ -521,7 +557,7 @@ describe('engine settings field models', () => {
 
   it('secrets never show a value, only whether one is saved', () => {
     const unset = settingFieldModel(def('ONTARIO_511_API_KEY'), empty);
-    expect(unset).toMatchObject({ kind: 'password', value: '', secret: true, placeholder: 'Not set' });
+    expect(unset).toMatchObject({ kind: 'password', value: '', secret: true, placeholder: 'Paste key' });
     const saved = settingFieldModel(def('ONTARIO_511_API_KEY'), { values: {}, set: { ONTARIO_511_API_KEY: true } });
     expect(saved.value).toBe('');
     expect(saved.placeholder).toBe('Saved. Type to replace it.');
@@ -629,8 +665,228 @@ describe('settings result messages', () => {
     expect(settingsResultMessage({ ok: true, restarting: true, invalid: {}, message: null })).toBe(ENGINE_SETTINGS_RESTARTING);
     expect(ENGINE_SETTINGS_RESTARTING).toBe('Restarting the engine to apply settings…');
     expect(settingsResultMessage({ ok: true, restarting: false, invalid: {}, message: 'Saved. Later.' })).toBe('Saved. Later.');
-    expect(settingsResultMessage({ ok: false, restarting: false, invalid: { CCTV_MAX_SOURCES: 'Enter a number.' }, message: 'Nothing was saved.' })).toBe('Enter a number. (CCTV_MAX_SOURCES)');
+    expect(settingsResultMessage({ ok: false, restarting: false, invalid: { CCTV_MAX_SOURCES: 'Enter a number.' }, message: 'Nothing was saved.' })).toBe('CCTV_MAX_SOURCES: Enter a number.');
+    expect(settingsResultMessage({ ok: false, restarting: false, invalid: { A: 'Too big.', B: 'Too small.' }, message: null }, (k) => (k === 'A' ? 'Alpha' : k))).toBe('Alpha: Too big. (and 1 more below)');
     expect(settingsResultMessage({ ok: false, restarting: false, invalid: {}, message: null })).toBe('The settings were not saved.');
     expect(ENGINE_SETTINGS_RESTART_NOTE).toContain('restarts the engine');
+  });
+});
+
+describe('warnings that only apply to some values (SET-02)', () => {
+  const zero = { warning: '0 turns the guard off completely.', warnWhen: 'zero' as const };
+  const on = { warning: 'Privacy.', warnWhen: 'on' as const };
+  it('shows the zero warning only for 0', () => {
+    expect(warningActive(zero, '')).toBe(false);
+    expect(warningActive(zero, '40')).toBe(false);
+    expect(warningActive(zero, '0')).toBe(true);
+    expect(warningActive(zero, ' 0 ')).toBe(true);
+  });
+  it('shows the privacy warning only when switched on', () => {
+    expect(warningActive(on, '')).toBe(false);
+    expect(warningActive(on, 'off')).toBe(false);
+    expect(warningActive(on, 'on')).toBe(true);
+  });
+  it('shows an unconditional warning always and no warning never', () => {
+    expect(warningActive({ warning: 'x', warnWhen: undefined }, '')).toBe(true);
+    expect(warningActive({ warning: null, warnWhen: undefined }, '0')).toBe(false);
+  });
+});
+
+describe('secret settings and pasted keys are trimmed (SET-06)', () => {
+  it('trims a secret before sending it', () => {
+    const defs = ENGINE_SETTINGS_CATALOG.flatMap((g) => g.settings).filter((d) => d.type === 'secret');
+    const def = defs[0];
+    expect(def).toBeDefined();
+    const patch = buildSettingsPatch(def === undefined ? [] : [def], [], { values: {}, set: {} }, { [def?.key ?? '']: { value: '  abc123\n' } });
+    expect(patch[def?.key ?? '']).toBe('abc123');
+  });
+});
+
+describe('npm advisories in the log tail (FR-4)', () => {
+  it('hides deprecation and install-script notes but keeps real output', () => {
+    const lines = [
+      'npm warn deprecated sourcemap-codec@1.4.8: Please use @jridgewell/sourcemap-codec instead',
+      'npm warn install-scripts 3 packages have install scripts not yet covered by allowScripts: esbuild@0.25.12',
+      'Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.',
+      'added 169 packages in 7s',
+      'npm error code ENOTFOUND',
+    ];
+    expect(visibleLogLines(lines)).toEqual(['added 169 packages in 7s', 'npm error code ENOTFOUND']);
+  });
+});
+
+describe('elapsed time and downgrades', () => {
+  it('formats the elapsed line and picks the phases that show it', () => {
+    expect(elapsedLabel(65_000)).toContain('1:05');
+    expect(showsElapsed('INSTALLING')).toBe(true);
+    expect(showsElapsed('RUNNING')).toBe(false);
+  });
+  it('words a move to an older version as such (EU-02)', () => {
+    const d: Disclosure = {
+      remote: 'r', channel: 'stable', fromCommit: 'a', toCommit: 'b', fromLabel: '7322ce5', toLabel: 'v0.3.0',
+      commitCount: 0, truncated: false, commits: [], diffStat: '', lockfileChanged: true, compareUrl: null,
+      dirty: { modified: [], untracked: [] }, needsReset: true, untested: false, gate: null, minShell: null,
+      severity: 'normal', blockedByShell: false, removedCommits: 12,
+    };
+    expect(isDowngrade(d)).toBe(true);
+    expect(disclosureHeading(d)).toBe('Move the engine back to an older version');
+    expect(formatDisclosureSummary(d)).toBe('From 7322ce5 to v0.3.0: removes 12 commits');
+    expect(isDowngrade({ ...d, commitCount: 3 })).toBe(false);
+  });
+});
+
+describe('progress copy (FR-6, FD-09, EU-06, EU-07)', () => {
+  it('picks the reason from the phase before and carries it through the install chain', () => {
+    expect(nextProgressReason(null, 'CLONING', null, false)).toBe('first-run');
+    expect(nextProgressReason('BOOT', 'CLONING', null, false)).toBe('first-run');
+    expect(nextProgressReason('ERROR', 'CLONING', null, false)).toBe('reset');
+    expect(nextProgressReason('CLONING', 'INSTALLING', 'first-run', false)).toBe('first-run');
+    expect(nextProgressReason('CLONING', 'INSTALLING', 'reset', false)).toBe('reset');
+    expect(nextProgressReason('BOOT', 'INSTALLING', null, false)).toBe('repair');
+    expect(nextProgressReason('CRASHED', 'INSTALLING', null, false)).toBe('repair');
+    expect(nextProgressReason('UPDATING', 'INSTALLING', null, false)).toBe('update');
+    expect(nextProgressReason('INSTALLING', 'STARTING', 'first-run', false)).toBe('first-run');
+    expect(nextProgressReason('STARTING', 'RUNNING', 'first-run', false)).toBeNull();
+    expect(nextProgressReason('UPDATING', 'ROLLING_BACK', null, true)).toBe('rollback');
+  });
+
+  it('keeps the first-run size note off a repair, update or rollback', () => {
+    for (const reason of ['repair', 'update', 'rollback'] as const) {
+      const note = phaseNote('INSTALLING', reason) ?? '';
+      expect(note).not.toContain('400 MB');
+      expect(note).not.toContain('first time');
+    }
+    expect(phaseNote('INSTALLING', 'first-run')).toContain('about 400 MB on disk');
+    expect(phaseNote('STARTING', 'repair')).toBeNull();
+    expect(phaseNote('STARTING', 'first-run')).toContain('browser bundle');
+  });
+
+  it('has reset-specific cloning copy', () => {
+    const reset = phaseNote('CLONING', 'reset') ?? '';
+    expect(reset).toContain('fresh copy');
+    expect(reset).not.toContain('First launch');
+    expect(reset).not.toContain('400 MB');
+  });
+
+  it('uses typographic apostrophes in the titles', () => {
+    expect(phaseTitle('CLONING')).toBe('Downloading God’s Eye View');
+    expect(phaseTitle('RUNNING')).toBe('God’s Eye View is running');
+  });
+
+  it('shows one sub-line that does not repeat the headline', () => {
+    expect(progressSubLine('Installing dependencies', 'Installing dependencies…', 'Installing dependencies')).toBe('');
+    expect(
+      progressSubLine('Downloading God’s Eye View', 'Downloading the God’s Eye View source from GitHub…', 'Downloading the God’s Eye View source'),
+    ).toBe('Downloading the God’s Eye View source from GitHub…');
+    expect(progressSubLine('Starting the engine', '', 'Waiting for the server on port 4231')).toBe('Waiting for the server on port 4231');
+  });
+
+  it('drops log lines that were already there when the phase began', () => {
+    const old = ['a', 'b', 'c', 'd'];
+    expect(newLogLines(old, old)).toEqual([]);
+    expect(newLogLines(old, ['c', 'd', 'e', 'f'])).toEqual(['e', 'f']);
+    expect(newLogLines(old, ['x', 'y'])).toEqual(['x', 'y']);
+    expect(newLogLines([], ['x'])).toEqual(['x']);
+  });
+
+  it('words the lockfile note without a made-up range', () => {
+    expect(LOCKFILE_NOTE).toContain('usually under a minute');
+  });
+});
+
+describe('disclosure numbers (EU-03)', () => {
+  it('formats counts with separators', () => {
+    expect(formatCount(125647)).toBe('125,647');
+    expect(formatCount(Number.NaN)).toBe('0');
+  });
+
+  it('turns git shortstat into a readable line', () => {
+    expect(formatDiffStat('1351 files changed, 125647 insertions(+), 23826 deletions(-)')).toBe(
+      '1,351 files changed, +125,647, \u221223,826',
+    );
+    expect(formatDiffStat(' 1 file changed, 2 insertions(+)\n')).toBe('1 file changed, +2');
+    expect(formatDiffStat('something else')).toBe('something else');
+    expect(formatDiffStat('')).toBe('');
+  });
+
+  it('says how many commits are shown of how many', () => {
+    const d = disclosure({ commitCount: 812, truncated: true, commits: Array.from({ length: 200 }, (_, i) => ({ sha: String(i), short: String(i), subject: 's', author: 'a', date: '2026-11-01' })) });
+    expect(formatDisclosureSummary(d)).toBe('From v0.3.0 to stable-2026.11.01: showing the newest 200 of 812 commits');
+  });
+});
+
+describe('settings copy (SET-09 to SET-15)', () => {
+  it('builds Save labels from a sentence-case noun phrase', () => {
+    expect(ENGINE_SETTINGS_CATALOG.map(groupSaveLabel)).toEqual([
+      'Save voice settings',
+      'Save spend and rate limit settings',
+      'Save data feed settings',
+      'Save camera settings',
+    ]);
+  });
+
+  it('labels multi-value key rows in plain words', () => {
+    const opensky = { envVars: ['OPENSKY_CLIENT_ID', 'OPENSKY_CLIENT_SECRET'] };
+    expect(keyFieldLabel(opensky, 'OPENSKY_CLIENT_ID')).toBe('Client ID');
+    expect(keyFieldLabel(opensky, 'OPENSKY_CLIENT_SECRET')).toBe('Client secret');
+    expect(keyFieldLabel({ envVars: ['AISSTREAM_API_KEY'] }, 'AISSTREAM_API_KEY')).toBe('Key');
+  });
+
+  it('explains a locked key box and a stored one', () => {
+    expect(keyPlaceholder({ set: true, lock: 'x' })).toBe('Managed by OpenTac while another summary provider is active');
+    expect(keyPlaceholder({ set: true, lock: null })).toBe('Saved. Type to replace it.');
+    expect(keyPlaceholder({ set: false, lock: null })).toBe('Paste key');
+  });
+
+  it('ends the restart message once the engine is back', () => {
+    expect(keyRestartedMessage('saved')).toBe('Saved. The engine has restarted.');
+    expect(keyRestartedMessage('removed')).toBe('Removed. The engine has restarted.');
+  });
+
+  it('only offers launch at login in the installed app', () => {
+    expect(launchAtLoginAvailable({ packaged: false })).toBe(false);
+    expect(launchAtLoginAvailable({ packaged: true })).toBe(true);
+    expect(launchAtLoginAvailable(null)).toBe(true);
+  });
+
+  it('shows the AI test summary with the raw JSON kept for Details', () => {
+    const r = parseAiTestReply('{"summary":"OK","feedState":null}');
+    expect(r.summary).toBe('OK');
+    expect(r.raw).toContain('"feedState": null');
+    expect(parseAiTestReply('plain words')).toEqual({ summary: 'plain words', raw: 'plain words' });
+    expect(parseAiTestReply('')).toEqual({ summary: '', raw: '' });
+  });
+
+  it('softens the proxy credentials message', () => {
+    const out = plainProxyReason('Proxy addresses with a user name or password are not supported, because OpenTac settings are not encrypted.');
+    expect(out).not.toContain('encrypted');
+    expect(out).toContain('host and port');
+    expect(plainProxyReason('Enter a full address.')).toBe('Enter a full address.');
+  });
+
+  it('describes the graphics honestly', () => {
+    expect(gpuSummary('ANGLE (Apple, Apple M2, OpenGL 4.1)').ok).toBe(true);
+    expect(gpuSummary('Google SwiftShader').ok).toBe(false);
+    expect(gpuSummary(null).ok).toBe(false);
+  });
+});
+
+describe('error panels and links (FD-14, DU-01)', () => {
+  it('gives the missing-files panel a plain title and drops Vite', () => {
+    expect(plainErrorTitle('A required piece is missing')).toBe('Some of OpenTac’s files are missing');
+    expect(plainErrorTitle('Something else')).toBe('Something else');
+    expect(plainErrorMessage('God’s Eye View’s dependencies are incomplete (its Vite dev server is missing). Reinstalling fixes this.')).not.toContain('Vite');
+  });
+
+  it('breaks piped log lines apart and hides a bare path', () => {
+    expect(plainErrorDetail('[stdout] a | [stderr] b')).toBe('[stdout] a\n[stderr] b');
+    expect(plainErrorDetail('/Users/me/Library/Application Support/OpenTac/checkout')).toBe('');
+    expect(plainErrorDetail('/Users/me/checkout: not a git repository')).not.toBe('');
+    expect(plainErrorDetail('/Users/me/checkout')).toBe('');
+    expect(plainErrorDetail(null)).toBe('');
+  });
+
+  it('points the licences link at a page that exists', () => {
+    expect(LICENSES_URL).toBe('https://github.com/gonzoinceng-ctrl/opentac-desktop/blob/main/THIRD_PARTY_NOTICES.md');
   });
 });

@@ -1,26 +1,20 @@
 ---
 title: OpenTac
 page-title: OpenTac | God's Eye View as a Mac app (unofficial)
-description: OpenTac is an unofficial macOS app for God's Eye View, the open-source real-time globe created by Bilawal Sidhu. Download for Apple Silicon or Intel.
+description: OpenTac is a free, non-commercial, unofficial macOS app for God's Eye View, the open-source real-time globe created by Bilawal Sidhu. First release coming soon.
+description-released: OpenTac is a free, non-commercial, unofficial macOS app for God's Eye View, the open-source real-time globe created by Bilawal Sidhu. Download for Apple Silicon or Intel.
 path: /
 ---
 {{> head}}
 {{> header}}
 <main id="main">
   <section class="hero">
-    <div class="wrap">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
       <p class="eyebrow">Unofficial macOS app</p>
       <h1>OpenTac</h1>
       <p class="lead">The open-source real-time globe, packaged as a Mac app. Install it, open it, and the live world is in front of you.</p>
-
-      <div class="credit">
-        <p>OpenTac is an unofficial macOS app for <a href="{{links.upstream}}" rel="noopener">God's Eye View</a>, the open-source real-time globe created by <a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu</a>. All the magic is his; OpenTac just makes it a double-click.</p>
-      </div>
-      <ul class="credit-links">
-        <li><a href="{{links.upstream}}" rel="noopener">God's Eye View on GitHub</a></li>
-        <li><a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu on YouTube</a></li>
-      </ul>
-      <p class="disclaimer">OpenTac is independent. It is not endorsed by, affiliated with, or supported by the upstream author. Questions or bugs about the globe itself belong in the <a href="{{links.upstreamIssues}}" rel="noopener">upstream repository</a>; problems with the Mac app or its installer belong in the <a href="{{links.appIssues}}" rel="noopener">OpenTac repository</a>.</p>
+      <p class="hero-facts">Free and non-commercial. Needs macOS 13.5 or later (Apple Silicon or Intel). No API keys required to start.</p>
 
       {{#if release.available}}
       <div class="cta" {{{dl.archAttrs}}}>
@@ -39,11 +33,21 @@ path: /
       </div>
       {{/if}}
 
+      <div class="credit">
+        <p>OpenTac is an unofficial macOS app for <a href="{{links.upstream}}" rel="noopener">God's Eye View</a>, the open-source real-time globe created by <a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu</a>. All the magic is his; OpenTac just makes it a double-click.</p>
+      </div>
+      <ul class="credit-links">
+        <li><a href="{{links.upstream}}" rel="noopener">God's Eye View on GitHub</a></li>
+        <li><a href="{{links.youtube}}" rel="noopener">Bilawal Sidhu on YouTube</a></li>
+      </ul>
+      <p class="disclaimer">OpenTac is independent. It is not endorsed by, affiliated with, or supported by the upstream author. Questions or bugs about the globe itself belong in the <a href="{{links.upstreamIssues}}" rel="noopener">upstream repository</a>; problems with the Mac app or its installer belong in the <a href="{{links.appIssues}}" rel="noopener">OpenTac repository</a>.</p>
+      </div>
+
       {{#if hero}}
       <figure class="shot">
         <picture>
           {{#if hero.webp}}<source srcset="{{hero.webp}}" type="image/webp">{{/if}}
-          <img src="{{hero.src}}" width="{{hero.width}}" height="{{hero.height}}" alt="{{hero.alt}}" loading="lazy" decoding="async">
+          <img src="{{hero.src}}" width="{{hero.width}}" height="{{hero.height}}" alt="{{hero.alt}}" fetchpriority="high" decoding="async">
         </picture>
         <figcaption>Screenshots show God's Eye View running inside OpenTac.</figcaption>
       </figure>
@@ -148,7 +152,7 @@ path: /
       </details>
       <details>
         <summary>Is it safe to open? Will macOS warn me?</summary>
-        <div class="answer"><p>Release builds are signed with a Developer ID and notarized by Apple, so the usual first-open prompt is all you should see. You can check the signature and the checksum yourself; the steps are on the <a href="/download/#verify">download page</a>.</p></div>
+        <div class="answer">{{#if release.available}}<p>Release builds are signed with a Developer ID and notarized by Apple, so the usual first-open prompt is all you should see. You can check the signature and the checksum yourself; the steps are on the <a href="/download/#verify">download page</a>.</p>{{else}}<p>There is no release to open yet. Releases are meant to be signed with a Developer ID and notarized by Apple; once one is published, the <a href="/download/#verify">download page</a> lists the signature, notarization and checksum checks so you can confirm it yourself.</p>{{/if}}</p></div>
       </details>
       <details>
         <summary>What does it send over the network?</summary>

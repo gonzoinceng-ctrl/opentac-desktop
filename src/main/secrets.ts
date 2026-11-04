@@ -18,6 +18,12 @@ export interface CreateSecretsOptions {
   file: string;
   safeStorage: SafeStorageLike;
   log: Logger;
+  /**
+   * How long {@link SecretsApi.available} waits for safeStorage before answering false. The first
+   * call can sit behind a macOS Keychain password prompt (an 'OpenTac Safe Storage' item made by a
+   * differently signed build); the shell must never wait on that. Default 5000 ms.
+   */
+  availabilityTimeoutMs?: number;
 }
 
 type SecretName = 'openrouter' | 'xai';
@@ -70,12 +76,46 @@ export function createSecrets(opts: CreateSecretsOptions): SecretsApi {
   const log = opts.log.scope('secrets');
   let writeChain: Promise<unknown> = Promise.resolve();
 
+  /** The in-flight safeStorage probe, shared by concurrent callers; cleared when it settles. */
+  let probe: Promise<boolean> | null = null;
+  const timeoutMs = opts.availabilityTimeoutMs ?? 5000;
+
+  function startProbe(): Promise<boolean> {
+    const p = (async (): Promise<boolean> => {
+      try {
+        return (await safeStorage.isEncryptionAvailable()) === true;
+      } catch (err) {
+        log.warn(`encryption availability check failed: ${errorMessage(err)}`);
+        return false;
+      }
+    })();
+    const clear = (): void => {
+      if (probe === p) probe = null;
+    };
+    void p.then(clear, clear);
+    return p;
+  }
+
   async function isAvailable(): Promise<boolean> {
+    probe ??= startProbe();
+    let timer: NodeJS.Timeout | undefined;
+    let didTimeOut = false;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => {
+        didTimeOut = true;
+        resolve(false);
+      }, timeoutMs);
+      timer.unref();
+    });
     try {
-      return (await safeStorage.isEncryptionAvailable()) === true;
-    } catch (err) {
-      log.warn(`encryption availability check failed: ${errorMessage(err)}`);
-      return false;
+      return await Promise.race([probe, timedOut]);
+    } finally {
+      clearTimeout(timer);
+      if (didTimeOut) {
+        log.warn(
+          `secure key storage did not answer within ${String(timeoutMs / 1000)} s (a Keychain prompt may be waiting); treating it as unavailable for now`,
+        );
+      }
     }
   }
 

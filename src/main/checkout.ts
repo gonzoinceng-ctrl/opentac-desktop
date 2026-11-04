@@ -157,8 +157,12 @@ export interface CheckoutManager {
     onProgress: (p: { phase: string; pct: number }) => void,
     opts?: { timeoutMs?: number },
   ): Promise<void>;
-  /** `git fetch --prune --tags origin` without force; default timeout 5 min. */
-  fetch(opts?: { timeoutMs?: number }): Promise<void>;
+  /**
+   * `git fetch --prune --tags origin` without force; default timeout 5 min. With `remoteUrl`
+   * (a one-run OPENTAC_ENGINE_REMOTE) it fetches from that URL into the same remote-tracking
+   * refs without rewriting the persistent origin.
+   */
+  fetch(opts?: { timeoutMs?: number; remoteUrl?: string }): Promise<void>;
   /** Resolves a channel (or an OPENTAC_ENGINE_REF-style override) to a commit and its tags. */
   resolveTarget(channel: Channel, override?: string): Promise<ResolvedTarget>;
   /** Full sha of HEAD. */
@@ -177,6 +181,8 @@ export interface CheckoutManager {
     to: string,
     max?: number,
   ): Promise<{ commits: CommitInfo[]; truncated: boolean }>;
+  /** True number of commits in `from..to` (`git rev-list --count`), not capped. */
+  countCommits(from: string, to: string): Promise<number>;
   /** `git diff --shortstat from..to`, trimmed. */
   diffStat(from: string, to: string): Promise<string>;
   /** True when package-lock.json differs between the two commits. */
@@ -385,8 +391,10 @@ export function createCheckoutManager(opts: CheckoutManagerOptions): CheckoutMan
       if (existsSync(checkoutDir)) {
         const entries = await readdir(checkoutDir).catch(() => ['?']);
         if (entries.length > 0) {
+          // A non-empty folder that is not a repository is a damaged checkout, not a failed download:
+          // NOT_A_REPO maps to the "download again" recovery (a Retry could never succeed).
           throw new GitError(
-            'CLONE_FAILED',
+            'NOT_A_REPO',
             'The engine checkout folder already exists and is not empty.',
             checkoutDir,
           );
@@ -431,7 +439,13 @@ export function createCheckoutManager(opts: CheckoutManagerOptions): CheckoutMan
         );
       }
       try {
-        await git.run(['fetch', '--prune', '--tags', 'origin'], checkoutDir, {
+        const from = fetchOpts.remoteUrl;
+        if (from !== undefined) rejectOptionLike(from, 'The remote');
+        const args =
+          from === undefined
+            ? ['fetch', '--prune', '--tags', 'origin']
+            : ['fetch', '--prune', '--tags', from, '+refs/heads/*:refs/remotes/origin/*'];
+        await git.run(args, checkoutDir, {
           timeoutMs: fetchOpts.timeoutMs ?? FETCH_TIMEOUT_MS,
           env: confinedEnv,
         });
@@ -535,6 +549,12 @@ export function createCheckoutManager(opts: CheckoutManagerOptions): CheckoutMan
       ]);
       const all = parseCommitLog(res.stdout);
       return { commits: all.slice(0, limit), truncated: all.length > limit };
+    },
+
+    async countCommits(from, to) {
+      rejectOptionLike(from, 'The start commit');
+      rejectOptionLike(to, 'The end commit');
+      return countRange(`${from}..${to}`);
     },
 
     async diffStat(from, to) {

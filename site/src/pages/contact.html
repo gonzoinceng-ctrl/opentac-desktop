@@ -24,30 +24,33 @@ current: contact
     <div id="contact-status" class="form-status" role="status" tabindex="-1" hidden></div>
 
     <form id="contact-form" class="contact-form" method="post" action="/api/contact" autocomplete="on">
-      <label>Name
-        <input type="text" name="name" required maxlength="100" autocomplete="name">
-      </label>
-      <label>Email
-        <input type="email" name="email" required maxlength="254" autocomplete="email">
-        <span class="form-hint">Only used to reply to you.</span>
-      </label>
-      <label>Subject
-        <select name="subject" required>
+      <div class="field">
+        <label for="f-name">Name</label>
+        <input id="f-name" type="text" name="name" required maxlength="100" autocomplete="name">
+      </div>
+      <div class="field">
+        <label for="f-email">Email</label>
+        <input id="f-email" type="email" name="email" required maxlength="254" autocomplete="email" aria-describedby="f-email-hint">
+        <p class="form-hint" id="f-email-hint">Only used to reply to you.</p>
+      </div>
+      <div class="field">
+        <label for="f-subject">Subject</label>
+        <select id="f-subject" name="subject" required>
           <option value="" selected disabled>Choose a subject</option>
           <option>App problem</option>
           <option>Engine/globe question</option>
           <option>Feedback</option>
           <option>Other</option>
         </select>
-      </label>
-      <label>Message
-        <textarea name="message" required minlength="10" maxlength="5000" rows="8"></textarea>
-        <span class="form-hint">10 to 5000 characters. Please do not include API keys or passwords.</span>
-      </label>
+      </div>
+      <div class="field">
+        <label for="f-message">Message</label>
+        <textarea id="f-message" name="message" required minlength="10" maxlength="5000" rows="8" aria-describedby="f-message-hint"></textarea>
+        <p class="form-hint" id="f-message-hint">10 to 5000 characters. Please do not include API keys or passwords.</p>
+      </div>
       <div class="hp" aria-hidden="true">
-        <label>Leave this field empty
-          <input type="text" name="website" tabindex="-1" autocomplete="off">
-        </label>
+        <label for="f-website">Leave this field empty</label>
+          <input id="f-website" type="text" name="website" tabindex="-1" autocomplete="off">
       </div>
       <button class="btn btn-primary" type="submit">Send message</button>
     </form>

@@ -1,9 +1,10 @@
+import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 
 import { app as electronApp, BrowserWindow, clipboard, Menu, shell } from 'electron';
 import type { App, MenuItemConstructorOptions } from 'electron';
 
-import { redact } from '../shared/redact.js';
+import { redact, redactHomeDir } from '../shared/redact.js';
 import type { ControllerApi } from './contracts.js';
 import type { Logger } from './logger.js';
 import type { Paths } from './paths.js';
@@ -29,12 +30,18 @@ export interface MenuOptions {
   log: Logger;
   urls: MenuUrls;
   paths: Pick<Paths, 'dataDir' | 'logsDir' | 'mainLog'>;
+  /** Defaults to Electron's app.isPackaged; the OPENTAC_E2E_NO_EXTERNAL hook only works unpackaged. */
+  isPackaged?: boolean;
   app?: Pick<App, 'getVersion' | 'getGPUInfo' | 'getGPUFeatureStatus' | 'setAboutPanelOptions' | 'showAboutPanel'>;
 }
 
 const DIAGNOSTIC_LOG_LINES = 50;
 
-function openUrl(url: string, log: Logger): void {
+function openUrl(url: string, log: Logger, suppress: boolean): void {
+  if (suppress) {
+    log.info(`E2E: openExternal suppressed for ${url}`);
+    return;
+  }
   shell.openExternal(url).catch((err: unknown) => log.warn(`could not open ${url}: ${String(err)}`));
 }
 
@@ -56,6 +63,14 @@ export function buildMenu(opts: MenuOptions): Menu {
   const { controller, ui, urls, paths } = opts;
   const app = opts.app ?? electronApp;
   const log = opts.log.scope('menu');
+  const suppressExternal = !(opts.isPackaged ?? electronApp.isPackaged) && process.env['OPENTAC_E2E_NO_EXTERNAL'] === '1';
+  const openExternalUrl = (url: string): void => openUrl(url, log, suppressExternal);
+  const openFolder = async (what: string, dir: string): Promise<void> => {
+    log.info(`opening the ${what}: ${redactHomeDir(dir, homedir())}`);
+    const err = await shell.openPath(dir);
+    if (err !== '') log.warn(`could not open the ${what}: ${err}`);
+    else log.info(`opened the ${what}`);
+  };
 
   const run = (label: string, fn: () => Promise<void> | void): (() => void) => {
     return () => {
@@ -105,7 +120,7 @@ export function buildMenu(opts: MenuOptions): Menu {
       `Last ${lines.length} log lines:`,
       ...lines,
     ].join('\n');
-    clipboard.writeText(redact(text));
+    clipboard.writeText(redactHomeDir(redact(text), homedir()));
     log.info('diagnostics copied to the clipboard');
   }
 
@@ -148,18 +163,17 @@ export function buildMenu(opts: MenuOptions): Menu {
               await ui.notify({ title: 'Not running yet', message: 'The engine is not running, so there is nothing to open.' });
               return;
             }
-            openUrl(url, log);
+            openExternalUrl(url);
           }),
         },
         { label: 'Restart Server', click: run('restart server', () => controller.action('restartServer')) },
         { label: 'Reload Page', click: run('reload page', () => ui.reloadMain()) },
         { type: 'separator' },
-        { label: 'Provider Settings Help', click: () => openUrl(urls.providerHelp, log) },
+        { label: 'Provider Settings Help', click: () => openExternalUrl(urls.providerHelp) },
         {
           label: 'Show Logs',
           click: run('show logs', async () => {
-            const err = await shell.openPath(paths.logsDir);
-            if (err !== '') log.warn(`could not open the logs folder: ${err}`);
+            await openFolder('logs folder', paths.logsDir);
           }),
         },
         { type: 'separator' },
@@ -176,17 +190,19 @@ export function buildMenu(opts: MenuOptions): Menu {
           }),
         },
         {
-          label: 'Reset to Upstream…',
+          label: 'Download Engine Again…',
           click: run('reset checkout', async () => {
-            const ok = await ui.confirm({
-              title: 'Reset the engine?',
-              message: 'Reset the engine to a clean copy of its source?',
-              detail:
-                'Any edits made inside the engine folder are discarded. Your API keys, settings and saved layers are not touched. Nothing you entered is lost.',
-              confirmLabel: 'Reset',
-              destructive: true,
-            });
-            if (ok) await controller.action('resetCheckout');
+            // The controller asks for confirmation itself (one dialog) and only acts in ERROR.
+            if (controller.phase() !== 'ERROR') {
+              await ui.notify({
+                title: 'Download the engine again',
+                message: 'This is only available when the engine shows an error.',
+                detail:
+                  'The engine is not in an error state, so there is nothing to repair. Use Reinstall Dependencies… or Check for Engine Updates… instead.',
+              });
+              return;
+            }
+            await controller.action('resetCheckout');
           }),
         },
       ],
@@ -217,8 +233,7 @@ export function buildMenu(opts: MenuOptions): Menu {
             {
               label: 'Open Data Folder',
               click: run('open data folder', async () => {
-                const err = await shell.openPath(paths.dataDir);
-                if (err !== '') log.warn(`could not open the data folder: ${err}`);
+                await openFolder('data folder', paths.dataDir);
               }),
             },
             { label: 'Copy Diagnostics', click: run('copy diagnostics', copyDiagnostics) },
@@ -226,15 +241,25 @@ export function buildMenu(opts: MenuOptions): Menu {
         },
       ],
     },
-    { role: 'windowMenu' },
+    {
+      label: 'Window',
+      role: 'windowMenu',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { role: 'close' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
     {
       role: 'help',
       submenu: [
-        { label: 'God’s Eye View README', click: () => openUrl(urls.upstreamReadme, log) },
-        { label: 'Report an Engine Issue (upstream)', click: () => openUrl(urls.upstreamIssues, log) },
-        { label: 'Report an App Issue', click: () => openUrl(urls.appIssues, log) },
+        { label: 'God’s Eye View README', click: () => openExternalUrl(urls.upstreamReadme) },
+        { label: 'Report an Engine Issue (upstream)', click: () => openExternalUrl(urls.upstreamIssues) },
+        { label: 'Report an App Issue', click: () => openExternalUrl(urls.appIssues) },
         { type: 'separator' },
-        { label: 'opentac.icu', click: () => openUrl(urls.site, log) },
+        { label: 'opentac.icu', click: () => openExternalUrl(urls.site) },
       ],
     },
   ];

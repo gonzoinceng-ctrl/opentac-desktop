@@ -179,6 +179,22 @@ const SETUP_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   IPC.usbPickerChoose,
 ]);
 
+/** One-way channel only the engine page may use (IPC.renderError, kept literal to avoid a cycle). */
+const ENGINE_ONLY_RENDER_ERROR = 'opentac:renderError';
+
+/** Auto-reload budget after Cesium render errors. */
+export const RENDER_ERROR_WINDOW_MS = 10 * 60_000;
+export const RENDER_ERROR_MAX_RELOADS = 3;
+
+/**
+ * Whether a render-error report should trigger an automatic reload: fewer than three reports
+ * (including earlier ones, excluding the one at `now`) in the last ten minutes.
+ */
+export function shouldAutoReloadAfterRenderError(timestamps: readonly number[], now: number): boolean {
+  const recent = timestamps.filter((t) => Number.isFinite(t) && t <= now && now - t < RENDER_ERROR_WINDOW_MS);
+  return recent.length < RENDER_ERROR_MAX_RELOADS;
+}
+
 /**
  * Whether a message on `channel` may come from the frame at `frameUrl`.
  * Setup-only channels and the USB picker channels require an `app://setup/` document. The three
@@ -194,6 +210,10 @@ export function isAllowedSender(
   if (typeof frameUrl !== 'string' || frameUrl === '') return false;
   const fromSetup = frameUrl.startsWith(SETUP_URL_PREFIX);
   if (SETUP_ONLY_CHANNELS.has(channel)) return fromSetup;
+  if (channel === ENGINE_ONLY_RENDER_ERROR) {
+    if (engineOrigin === null || engineOrigin === undefined) return false;
+    return originOf(frameUrl) === engineOrigin;
+  }
   if (SHARED_CHANNELS.has(channel)) {
     if (fromSetup) return true;
     if (engineOrigin === null || engineOrigin === undefined) return false;
@@ -248,7 +268,76 @@ export function validateBounds(
   const overlapH =
     Math.min(saved.y + size.height, workArea.y + workArea.height) - Math.max(saved.y, workArea.y);
   if (overlapW < MIN_VISIBLE_WIDTH || overlapH < MIN_VISIBLE_HEIGHT) return size;
-  // The title bar must be reachable: its top edge may not sit above the work area.
-  const y = Math.max(saved.y, workArea.y);
-  return { x: Math.round(saved.x), y: Math.round(y), ...size };
+  // Keep the whole window inside the work area (a clamped size must not leave it hanging off the
+  // bottom or right edge), which also keeps the title bar below the top of the work area.
+  const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width);
+  const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height);
+  const x = Math.min(Math.max(saved.x, workArea.x), maxX);
+  const y = Math.min(Math.max(saved.y, workArea.y), maxY);
+  return { x: Math.round(x), y: Math.round(y), ...size };
+}
+
+/**
+ * Picks the work area to restore saved bounds into: the current display whose work area overlaps
+ * the saved rectangle enough to be reachable, else `fallback` (the primary display), in which case
+ * {@link validateBounds} drops the saved position and the window is centred.
+ */
+export function chooseWorkArea(saved: WindowBounds | null, workAreas: readonly Rect[], fallback: Rect): Rect {
+  if (
+    saved === null ||
+    !isFiniteNumber(saved.x) ||
+    !isFiniteNumber(saved.y) ||
+    !isFiniteNumber(saved.width) ||
+    !isFiniteNumber(saved.height)
+  ) {
+    return fallback;
+  }
+  let best: Rect | null = null;
+  let bestArea = 0;
+  for (const wa of workAreas) {
+    const w = Math.min(saved.x + saved.width, wa.x + wa.width) - Math.max(saved.x, wa.x);
+    const h = Math.min(saved.y + saved.height, wa.y + wa.height) - Math.max(saved.y, wa.y);
+    if (w < MIN_VISIBLE_WIDTH || h < MIN_VISIBLE_HEIGHT) continue;
+    if (w * h > bestArea) {
+      best = wa;
+      bestArea = w * h;
+    }
+  }
+  return best ?? fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Ollama host
+// ---------------------------------------------------------------------------
+
+function isLoopbackHost(h: string): boolean {
+  return h === 'localhost' || h === '::1' || h === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(h);
+}
+
+function isPrivateLanHost(h: string): boolean {
+  if (/^10(?:\.\d{1,3}){3}$/.test(h)) return true;
+  if (/^192\.168(?:\.\d{1,3}){2}$/.test(h)) return true;
+  if (/^169\.254(?:\.\d{1,3}){2}$/.test(h)) return true;
+  const m = /^172\.(\d{1,3})(?:\.\d{1,3}){2}$/.exec(h);
+  if (m !== null && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  return h.endsWith('.local') || /^\[f[cd][0-9a-f:]*\]$/i.test(h) || /^\[fe80:[0-9a-f:]*\]$/i.test(h);
+}
+
+/**
+ * A warning for an Ollama host that sends summary prompts (which carry location context) somewhere
+ * other than this Mac or a private network, or in clear text off this Mac; null when it is fine.
+ */
+export function ollamaHostWarning(host: string | null): string | null {
+  const raw = (host ?? '').trim();
+  if (raw === '') return null;
+  const m = /^(https?):\/\/([^\s/@:]+|\[[0-9a-f:]+\])(?::\d{1,5})?\/?$/i.exec(raw);
+  if (m === null) return null;
+  const scheme = (m[1] ?? '').toLowerCase();
+  const name = (m[2] ?? '').toLowerCase();
+  if (isLoopbackHost(name)) return null;
+  if (!isPrivateLanHost(name)) {
+    return `the Ollama host ${name} is neither this Mac nor a private network address; HUD summary prompts will leave your network${scheme === 'http' ? ' unencrypted' : ''}`;
+  }
+  if (scheme === 'http') return `the Ollama host ${name} is reached over plain http; prompts cross the network unencrypted`;
+  return null;
 }

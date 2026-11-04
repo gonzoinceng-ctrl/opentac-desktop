@@ -16,21 +16,30 @@ import { engineKeyValueProblem } from '../../shared/engineKeyCatalog.js';
 import { ENGINE_SETTINGS_CATALOG } from '../../shared/engineSettingsCatalog.js';
 import type { SettingGroup } from '../../shared/engineSettingsCatalog.js';
 import { isExternalUrl, isSetAiKeyPayload, isSetAiPayload } from '../../shared/ipc.js';
-import type { EngineKeyRow, EngineKeysPublic } from '../../shared/ipc.js';
+import type { EngineKeyRow, EngineKeysPublic, Phase } from '../../shared/ipc.js';
 import type { Channel, LogLevelSetting, UpdateCheckInterval } from '../../shared/types.js';
 import {
   APP_NEXT_LAUNCH_NOTE,
   ENGINE_SETTINGS_RESTART_NOTE,
+  EXPOSED_LEGEND,
   LICENSES_URL,
+  LOGIN_UNAVAILABLE_NOTE,
   LOG_LEVEL_OPTIONS,
   PREFERENCE_TABS,
   PROXY_NOTE,
   SETTINGS_MAP,
+  STATUS_SECONDS,
   UPDATE_INTERVAL_OPTIONS,
+  UPSTREAM_URL,
   buildSettingsPatch,
   channelName,
   groupFieldModels,
+  groupSaveLabel,
+  gpuSummary,
+  keyFieldLabel,
   keyInputLabel,
+  keyPlaceholder,
+  keyRestartedMessage,
   keyResultMessage,
   keyRowEditable,
   keyRowState,
@@ -48,19 +57,34 @@ import {
   disclosureBlockNote,
   disclosureButtons,
   disclosureHeading,
+  elapsedLabel,
   formatDate,
   formatDisclosureSummary,
   formatGateLine,
+  formatDiffStat,
+  isDowngrade,
   isNearBottom,
   labelForAction,
+  launchAtLoginAvailable,
+  newLogLines,
+  nextProgressReason,
+  parseAiTestReply,
+  plainErrorDetail,
+  plainErrorMessage,
+  plainErrorTitle,
+  plainProxyReason,
+  progressSubLine,
   LOCKFILE_NOTE,
   panelForPhase,
   phaseNote,
   phaseTitle,
   progressValue,
+  showsElapsed,
   untestedBanner,
+  visibleLogLines,
+  warningActive,
 } from './view.js';
-import type { FieldInput, PanelId, SettingFieldModel, TabName } from './view.js';
+import type { FieldInput, PanelId, ProgressReason, SettingFieldModel, TabName } from './view.js';
 
 declare global {
   interface Window {
@@ -104,6 +128,52 @@ function setText(node: HTMLElement, text: string): void {
 
 function setHidden(node: HTMLElement, hidden: boolean): void {
   if (node.hidden !== hidden) node.hidden = hidden;
+}
+
+// Status lines under controls say what just happened. They clear on their own after a few seconds, and
+// as soon as another control in Preferences is used, so an old message never sits next to a new action.
+const statusTimers = new WeakMap<HTMLElement, number>();
+const statusRestore = new WeakMap<HTMLElement, () => string>();
+
+type StatusKind = 'ok' | 'error' | 'busy';
+
+function setStatus(node: HTMLElement, text: string, kind: StatusKind = 'ok', seconds?: number): void {
+  const old = statusTimers.get(node);
+  if (old !== undefined) window.clearTimeout(old);
+  statusTimers.delete(node);
+  setText(node, text);
+  node.classList.toggle('status-error', kind === 'error');
+  if (text === '') {
+    delete node.dataset['transient'];
+    delete node.dataset['busy'];
+    return;
+  }
+  node.dataset['transient'] = 'true';
+  if (kind === 'busy') node.dataset['busy'] = 'true';
+  else {
+    delete node.dataset['busy'];
+    const secs = seconds ?? STATUS_SECONDS[kind];
+    statusTimers.set(node, window.setTimeout(() => {
+      clearStatus(node);
+    }, secs * 1000));
+  }
+}
+
+function clearStatus(node: HTMLElement): void {
+  const t = statusTimers.get(node);
+  if (t !== undefined) window.clearTimeout(t);
+  statusTimers.delete(node);
+  delete node.dataset['transient'];
+  delete node.dataset['busy'];
+  node.classList.remove('status-error');
+  setText(node, statusRestore.get(node)?.() ?? '');
+}
+
+/** Clears every finished status line inside Preferences (a message still saying "Saving…" stays). */
+function clearFinishedStatuses(): void {
+  for (const n of Array.from(byId('panel-preferences').querySelectorAll<HTMLElement>('[data-transient="true"]'))) {
+    if (n.dataset['busy'] !== 'true') clearStatus(n);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +270,7 @@ function renderHeader(state: PublicState): void {
   const v = state.versions;
   setText(
     byId('versions'),
-    v === null ? '' : `OpenTac ${v.app} · God's Eye View ${engineLabel(v)}`,
+    v === null ? '' : `OpenTac ${v.app} · God’s Eye View ${engineLabel(v)}`,
   );
 }
 
@@ -223,7 +293,14 @@ function renderNotices(state: PublicState): void {
         dismissedNotices.add(text);
         const i = localNotices.indexOf(text);
         if (i >= 0) localNotices.splice(i, 1);
-        if (current !== null) render(current);
+        if (current !== null) {
+          render(current);
+          // The app is running and this was the last notice: nothing is left to look at (FD-05).
+          const left = [...current.notices, ...localNotices].filter((n) => !dismissedNotices.has(n));
+          if (current.phase === 'RUNNING' && left.length === 0 && panelForPhase(current) === 'progress') {
+            runAction('closePreferences');
+          }
+        }
       });
       row.append(dismiss);
       host.append(row);
@@ -243,9 +320,45 @@ function setLog(node: HTMLElement, lines: readonly string[], follow: boolean): v
   }
 }
 
+let phaseStartedAt = Date.now();
+let phaseSeen: Phase | null = null;
+let phaseKey = '';
+let progressReason: ProgressReason | null = null;
+let logBaseline: string[] = [];
+let elapsedTimer: number | null = null;
+
+/**
+ * Remembers where the current progress phase began: when (for the elapsed line), why (first run,
+ * reset, repair, update or rollback, which decides the note), and what the log looked like then
+ * (so the previous run's output is not shown as if it were this phase's).
+ */
+function trackPhase(state: PublicState): void {
+  const key = `${state.phase}:${String(state.rollingBack === true)}`;
+  if (key === phaseKey) return;
+  phaseKey = key;
+  progressReason = nextProgressReason(phaseSeen, state.phase, progressReason, state.rollingBack === true);
+  phaseSeen = state.phase;
+  phaseStartedAt = Date.now();
+  logBaseline = [...state.logTail];
+}
+
+function updateElapsed(): void {
+  const node = document.getElementById('progress-elapsed');
+  if (node === null || current === null) return;
+  const show = showsElapsed(current.phase) && Date.now() - phaseStartedAt >= 5000 && shownPanel === 'progress';
+  setHidden(node, !show);
+  if (show) setText(node, elapsedLabel(Date.now() - phaseStartedAt));
+}
+
 function renderProgress(state: PublicState): void {
-  setText(byId('progress-title'), phaseTitle(state.phase));
-  setText(byId('progress-message'), state.message);
+  const running = state.phase === 'RUNNING';
+  const restoring = state.rollingBack === true;
+  const title = restoring ? phaseTitle('ROLLING_BACK') : phaseTitle(state.phase);
+  setText(byId('progress-title'), title);
+  // One headline and one sub-line: the shell's message and bar label often just repeat the headline.
+  const sub = running ? 'You can close this window.' : progressSubLine(title, state.message, state.progress?.label ?? '');
+  setText(byId('progress-message'), sub);
+  setHidden(byId('progress-message'), sub === '');
   const bar = byId<HTMLProgressElement>('progress-bar');
   const value = progressValue(state.progress?.pct);
   if (value === null) {
@@ -253,10 +366,20 @@ function renderProgress(state: PublicState): void {
   } else {
     bar.value = value;
   }
-  bar.setAttribute('aria-label', state.progress?.label ?? phaseTitle(state.phase));
-  setText(byId('progress-label'), state.progress === null ? '' : state.progress.label);
-  setText(byId('progress-note'), phaseNote(state.phase) ?? '');
-  setLog(byId('log'), state.logTail, !logPaused);
+  bar.setAttribute('aria-label', state.progress?.label ?? title);
+  const pct = byId('progress-label');
+  setText(pct, value === null ? '' : `${Math.round(value)}%`);
+  setHidden(pct, running || value === null);
+  setText(byId('progress-note'), (restoring ? phaseNote('ROLLING_BACK') : phaseNote(state.phase, progressReason)) ?? '');
+  // A running engine has nothing left to show but a status line (FD-05).
+  setHidden(bar, running);
+  const lines = visibleLogLines(newLogLines(logBaseline, state.logTail));
+  const hideLog = running || lines.length === 0;
+  setHidden(byId('log'), hideLog);
+  if (hideLog) setHidden(byId('log-paused'), true);
+  setLog(byId('log'), lines, !logPaused);
+  if (elapsedTimer === null) elapsedTimer = window.setInterval(updateElapsed, 1000);
+  updateElapsed();
 }
 
 function wireLog(): void {
@@ -308,6 +431,11 @@ function renderDisclosure(d: Disclosure): void {
   const blockEl = byId('disclosure-block');
   setHidden(blockEl, block === null);
   setText(blockEl, block ?? '');
+  // Moving back to an older version is a warning, not a footnote (EU-02).
+  const downgrade = isDowngrade(d);
+  blockEl.className = downgrade ? 'banner banner-warn' : 'note';
+  setHidden(byId('commits-heading'), d.commits.length === 0);
+  setHidden(byId('commit-list'), d.commits.length === 0);
 
   const dirty = dirtyFileLines(d);
   setHidden(byId('disclosure-dirty'), dirty.length === 0);
@@ -328,7 +456,7 @@ function renderDisclosure(d: Disclosure): void {
       list.append(li);
     }
   });
-  const stat = d.diffStat.trim();
+  const stat = formatDiffStat(d.diffStat);
   setHidden(byId('diffstat-details'), stat === '');
   setText(byId('diffstat'), stat);
 
@@ -343,6 +471,10 @@ function renderDisclosure(d: Disclosure): void {
 // ---------------------------------------------------------------------------
 
 function renderCrash(state: PublicState): void {
+  const reason = byId('crash-reason');
+  const why = state.error?.message ?? '';
+  setHidden(reason, why === '');
+  setText(reason, why);
   setLog(byId('crash-log'), state.logTail, true);
   setButtons(byId('crash-buttons'), ['restartServer', 'showLogs', 'reinstall']);
 }
@@ -350,11 +482,12 @@ function renderCrash(state: PublicState): void {
 function renderError(state: PublicState): void {
   const err = state.error;
   if (err === null) return;
-  setText(byId('error-title'), err.title);
-  setText(byId('error-message'), err.message);
+  setText(byId('error-title'), plainErrorTitle(err.title));
+  setText(byId('error-message'), plainErrorMessage(err.message));
   const detail = byId('error-detail');
-  setHidden(detail, err.detail === null || err.detail === '');
-  setText(detail, err.detail ?? '');
+  const detailText = plainErrorDetail(err.detail);
+  setHidden(detail, detailText === '');
+  setText(detail, detailText);
   setButtons(byId('error-buttons'), err.actions.length > 0 ? err.actions : ['retry', 'showLogs', 'quit']);
 }
 
@@ -362,10 +495,29 @@ function renderError(state: PublicState): void {
 // About
 // ---------------------------------------------------------------------------
 
+let gpuInfo: { ok: boolean; text: string } | null = null;
+
+/** The renderer string WebGL reports, or null when WebGL is not available. */
+function webglRenderer(): string | null {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (gl === null) return null;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const r: unknown = gl.getParameter(ext === null ? gl.RENDERER : ext.UNMASKED_RENDERER_WEBGL);
+    return typeof r === 'string' ? r : null;
+  } catch {
+    return null;
+  }
+}
+
 function renderAbout(state: PublicState): void {
   const v = state.versions;
+  gpuInfo ??= gpuSummary(webglRenderer());
+  setText(byId('about-gpu'), gpuInfo.text);
+  byId('about-gpu').classList.toggle('status-error', !gpuInfo.ok);
+  setHidden(byId('about-gpu-hint'), gpuInfo.ok);
   if (v === null) {
-    for (const id of ['about-app', 'about-engine', 'about-channel', 'about-electron', 'about-node', 'about-datadir']) {
+    for (const id of ['about-app', 'about-engine', 'about-channel', 'about-remote', 'about-electron', 'about-node', 'about-datadir']) {
       setText(byId(id), 'Loading…');
     }
     return;
@@ -374,6 +526,7 @@ function renderAbout(state: PublicState): void {
   const stable = v.engine.stableTag === null ? '' : `, release ${v.engine.stableTag}`;
   setText(byId('about-engine'), `${engineLabel(v)}${stable}`);
   setText(byId('about-channel'), channelName(v.engine.channel));
+  setText(byId('about-remote'), v.engine.remote);
   setText(byId('about-electron'), `${v.electron} (Chromium ${v.chromium})`);
   setText(byId('about-node'), v.bundledNode);
   setText(byId('about-datadir'), v.dataDir);
@@ -384,6 +537,8 @@ function renderAbout(state: PublicState): void {
 // ---------------------------------------------------------------------------
 
 function selectTab(tab: TabName, focus: boolean): void {
+  // A different tab starts at its top, not wherever the last one was scrolled to.
+  if (tab !== activeTab) byId('main').scrollTop = 0;
   activeTab = tab;
   for (const t of TABS) {
     const btn = byId(`tab-${t}`);
@@ -434,8 +589,13 @@ function updateAiVisibility(state: PublicState): void {
   for (const p of ['openrouter', 'xai'] as const) {
     byId<HTMLInputElement>(`key-${p}`).disabled = !available;
     byId<HTMLButtonElement>(`btn-save-key-${p}`).disabled = !available;
-    byId<HTMLButtonElement>(`btn-clear-key-${p}`).disabled = !available;
+    const stored = p === 'openrouter' ? state.ai.hasOpenRouterKey : state.ai.hasXaiKey;
+    byId<HTMLButtonElement>(`btn-clear-key-${p}`).disabled = !available || !stored;
   }
+  // OpenAI summaries are sent by the engine, which has its own model setting: no model box here.
+  setHidden(byId('ai-model-field'), provider === 'openai');
+  setHidden(byId('ai-openai-note'), provider !== 'openai');
+  byId<HTMLButtonElement>('btn-test-ai').disabled = aiDirty || provider === 'openai';
   const changed = provider !== state.ai.provider;
   setText(byId('ai-restart-note'), changed ? 'Saving a different provider restarts the engine.' : '');
 }
@@ -454,8 +614,10 @@ function renderPreferences(state: PublicState): void {
     byId<HTMLInputElement>('ai-model').value = state.ai.model ?? '';
     byId<HTMLInputElement>('ai-ollama-host').value = state.ai.ollamaHost ?? '';
   }
-  setText(byId('state-key-openrouter'), state.ai.hasOpenRouterKey ? 'Key stored.' : 'No key stored.');
-  setText(byId('state-key-xai'), state.ai.hasXaiKey ? 'Key stored.' : 'No key stored.');
+  for (const [p, has] of [['openrouter', state.ai.hasOpenRouterKey], ['xai', state.ai.hasXaiKey]] as const) {
+    const node = byId(`state-key-${p}`);
+    if (node.dataset['transient'] !== 'true') setText(node, has ? 'Key stored.' : 'No key stored.');
+  }
   updateAiVisibility(state);
   renderKeys(state);
   fillEngineSettings(state);
@@ -516,8 +678,9 @@ function buildKeyRow(row: EngineKeyRow): HTMLLIElement {
   row.envVars.forEach((envVar, i) => {
     const wrap = make('div');
     const inputId = `key-input-${row.id}-${i}`;
-    const label = make('label', undefined, row.envVars.length > 1 ? envVar : 'Key');
+    const label = make('label', undefined, keyFieldLabel(row, envVar));
     label.htmlFor = inputId;
+    label.title = envVar;
     const inline = make('div', 'inline');
     const input = make('input');
     input.type = 'password';
@@ -526,11 +689,12 @@ function buildKeyRow(row: EngineKeyRow): HTMLLIElement {
     input.spellcheck = false;
     input.maxLength = 512;
     input.dataset['envVar'] = envVar;
+    input.title = envVar;
     input.setAttribute('aria-label', keyInputLabel(row, envVar));
     const show = make('button', undefined, 'Show');
     show.type = 'button';
     show.setAttribute('aria-pressed', 'false');
-    show.setAttribute('aria-label', `Show ${envVar}`);
+    show.setAttribute('aria-label', `Show ${keyFieldLabel(row, envVar).toLowerCase()}`);
     show.addEventListener('click', () => {
       const showing = input.type === 'text';
       input.type = showing ? 'password' : 'text';
@@ -552,10 +716,10 @@ function buildKeyRow(row: EngineKeyRow): HTMLLIElement {
   save.addEventListener('click', () => {
     void saveEngineKeyRow(row.id, false);
   });
-  const clear = make('button', undefined, 'Clear');
+  const clear = make('button', undefined, 'Remove');
   clear.type = 'button';
   clear.dataset['role'] = 'clear';
-  clear.addEventListener('click', () => {
+  armedButton(clear, 'Click again to remove', () => {
     void saveEngineKeyRow(row.id, true);
   });
   const get = make('button', 'link-button', 'Get key');
@@ -592,8 +756,9 @@ function updateKeyRow(li: HTMLElement, row: EngineKeyRow, list: EngineKeysPublic
   const editable = keyRowEditable(row, list);
   for (const input of Array.from(li.querySelectorAll<HTMLInputElement>('input'))) {
     input.disabled = !editable;
-    input.placeholder = row.set ? 'Saved. Type to replace it.' : 'Paste key';
+    input.placeholder = keyPlaceholder(row);
   }
+  for (const show of Array.from(li.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'))) show.disabled = !editable;
   (part(li, 'save') as HTMLButtonElement).disabled = !editable;
   (part(li, 'clear') as HTMLButtonElement).disabled = !editable || !row.set;
   setHidden(part(li, 'get'), !isExternalUrl(row.getUrl));
@@ -613,14 +778,63 @@ function syncKeyList(host: HTMLElement, rows: readonly EngineKeyRow[], list: Eng
 
 function renderKeys(state: PublicState): void {
   const list = state.engineKeys;
+  checkKeyRestarts(state);
+  const legend = byId('keys-legend');
+  setText(legend, EXPOSED_LEGEND);
+  setHidden(legend, !list.keys.some((k) => k.clientExposed));
   const note = byId('keys-note');
   setHidden(note, list.note === null);
   setText(note, list.note ?? '');
-  setText(byId('keys-summary'), keysSummary(list));
+  setText(byId('keys-summary'), keysSummary(list, state.ai.provider !== 'openai'));
   const { main, advanced } = splitKeyRows(list);
   syncKeyList(byId('keys-list'), main, list);
   setHidden(byId('keys-advanced'), advanced.length === 0);
   syncKeyList(byId('keys-list-advanced'), advanced, list);
+}
+
+interface PendingKey {
+  what: 'saved' | 'removed';
+  at: number;
+}
+const pendingKeys = new Map<string, PendingKey>();
+let keyPoll: number | null = null;
+
+function finishKeyRestart(id: string, sawEngine: boolean): void {
+  const p = pendingKeys.get(id);
+  if (p === undefined) return;
+  pendingKeys.delete(id);
+  if (pendingKeys.size === 0 && keyPoll !== null) {
+    window.clearInterval(keyPoll);
+    keyPoll = null;
+  }
+  const li = document.querySelector<HTMLElement>(`[data-key-id="${id}"]`);
+  if (li === null) return;
+  const status = part(li, 'status');
+  // Only replace the message if it is still on screen (using another control clears it).
+  if (status.dataset['transient'] !== 'true') return;
+  setStatus(status, sawEngine ? keyRestartedMessage(p.what) : p.what === 'saved' ? 'Saved.' : 'Removed.');
+}
+
+/** Once the key list shows the change again from a running engine, "restarting" becomes "has restarted". */
+function checkKeyRestarts(state: PublicState): void {
+  for (const [id, p] of [...pendingKeys]) {
+    const row = state.engineKeys.keys.find((k) => k.id === id);
+    if (row === undefined || Date.now() - p.at < 1500) continue;
+    if (state.engineKeys.source !== 'engine' || state.phase !== 'RUNNING') continue;
+    if (p.what === 'saved' ? row.set : !row.set) finishKeyRestart(id, true);
+  }
+}
+
+function watchKeyRestart(id: string, what: 'saved' | 'removed'): void {
+  pendingKeys.set(id, { what, at: Date.now() });
+  const started = Date.now();
+  keyPoll ??= window.setInterval(() => {
+    if (Date.now() - started > 25_000) {
+      for (const k of [...pendingKeys.keys()]) finishKeyRestart(k, false);
+      return;
+    }
+    api.getState().then(render).catch(() => undefined);
+  }, 1500);
 }
 
 async function saveEngineKeyRow(id: string, clear: boolean): Promise<void> {
@@ -630,31 +844,36 @@ async function saveEngineKeyRow(id: string, clear: boolean): Promise<void> {
   const inputs = Array.from(li.querySelectorAll<HTMLInputElement>('input[data-env-var]'));
   try {
     if (clear) {
-      setText(status, 'Removing the key…');
+      setStatus(status, 'Removing the key…', 'busy');
       const r = await api.clearEngineKey({ id });
-      setText(status, keyResultMessage(r, 'removed'));
-      if (r.ok) for (const i of inputs) i.value = '';
+      setStatus(status, keyResultMessage(r, 'removed'), r.ok ? 'ok' : 'error', r.ok ? 25 : undefined);
+      if (r.ok) {
+        for (const i of inputs) i.value = '';
+        watchKeyRestart(id, 'removed');
+      }
       return;
     }
     const values: Record<string, string> = {};
     for (const input of inputs) {
-      const v = input.value;
+      // Pasted keys often carry a stray space or newline at the ends; only interior whitespace is a problem.
+      const v = input.value.trim();
       if (v === '') continue;
       const problem = engineKeyValueProblem(v);
       if (problem !== null) {
-        setText(status, problem);
+        setStatus(status, problem, 'error');
         return;
       }
       values[input.dataset['envVar'] ?? ''] = v;
     }
     if (Object.keys(values).length === 0) {
-      setText(status, 'Type or paste a key first.');
+      setStatus(status, 'Type or paste a key first.', 'error');
       return;
     }
-    setText(status, 'Saving…');
+    setStatus(status, 'Saving…', 'busy');
     const r = await api.saveEngineKey({ values });
-    setText(status, keyResultMessage(r, 'saved'));
+    setStatus(status, keyResultMessage(r, 'saved'), r.ok ? 'ok' : 'error', r.ok ? 25 : undefined);
     if (r.ok) {
+      watchKeyRestart(id, 'saved');
       for (const i of inputs) {
         i.value = '';
         i.type = 'password';
@@ -665,7 +884,7 @@ async function saveEngineKeyRow(id: string, clear: boolean): Promise<void> {
       }
     }
   } catch (err) {
-    setText(status, `Could not save the key. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the key. ${err instanceof Error ? err.message : String(err)}`, 'error');
   }
 }
 
@@ -680,6 +899,14 @@ interface EngineControl {
   off: HTMLInputElement | null;
   /** 'region-enabled' controls are checkboxes whose state is the effective on/off. */
   role: 'field' | 'region-enabled' | 'region-field';
+  /** Human label used in error messages. */
+  label: string;
+  /** The caution under the field and when it applies. */
+  warn?: { el: HTMLElement; model: Pick<SettingFieldModel, 'warning' | 'warnWhen'> };
+  /** The inline error under the field. */
+  error?: HTMLElement;
+  /** The Remove button of a secret field (only useful while something is stored). */
+  remove?: HTMLButtonElement;
 }
 
 const engineControls = new Map<string, EngineControl>();
@@ -716,9 +943,13 @@ function makeSettingControl(model: SettingFieldModel, groupId: string): { field:
     el = input;
   }
   el.id = inputId;
+  // The variable name is for people who edit the .env file by hand: a tooltip, and a switch at the top of the tab.
+  label.title = model.key;
+  el.title = model.key;
   const descId = describeId(model.key, 'desc');
   el.setAttribute('aria-describedby', descId);
-  const desc = make('p', 'muted small', `${model.description} (${model.key})`);
+  const desc = make('p', 'muted small', model.description);
+  desc.append(make('span', 'env-name', ` (${model.key})`));
   desc.id = descId;
   field.append(label, el);
   let off: HTMLInputElement | null = null;
@@ -731,21 +962,45 @@ function makeSettingControl(model: SettingFieldModel, groupId: string): { field:
     field.append(wrap);
   }
   field.append(desc);
+  let warnPart: EngineControl['warn'];
   if (model.warning !== null) {
     const warn = make('p', 'banner banner-warn', model.warning);
     warn.setAttribute('role', 'note');
+    warn.hidden = true;
     field.append(warn);
+    warnPart = { el: warn, model: { warning: model.warning, warnWhen: model.warnWhen } };
   }
+  const errorEl = make('p', 'field-error');
+  errorEl.id = describeId(model.key, 'error');
+  errorEl.setAttribute('role', 'alert');
+  errorEl.hidden = true;
+  field.append(errorEl);
+  let removeBtn: HTMLButtonElement | undefined;
   if (model.secret) {
     const remove = make('button', undefined, 'Remove');
     remove.type = 'button';
+    remove.disabled = !model.isSet;
     remove.setAttribute('aria-label', `Remove ${model.label}`);
-    remove.addEventListener('click', () => {
+    armedButton(remove, 'Click again to remove', () => {
       void saveEngineSettingsPatch(groupId, { [model.key]: null });
     });
     field.append(remove);
+    removeBtn = remove;
   }
-  return { field, control: { key: model.key, groupId, el, off, role: 'field' } };
+  return {
+    field,
+    control: {
+      key: model.key,
+      groupId,
+      el,
+      off,
+      role: 'field',
+      label: model.label,
+      ...(warnPart !== undefined ? { warn: warnPart } : {}),
+      ...(removeBtn !== undefined ? { remove: removeBtn } : {}),
+      error: errorEl,
+    },
+  };
 }
 
 function buildRegionTable(group: SettingGroup): HTMLElement {
@@ -777,7 +1032,7 @@ function buildRegionTable(group: SettingGroup): HTMLElement {
       box.id = describeId(r.enabledKey, 'input');
       box.setAttribute('aria-label', `${r.label}: enabled`);
       on.append(box);
-      engineControls.set(r.enabledKey, { key: r.enabledKey, groupId: group.id, el: box, off: null, role: 'region-enabled' });
+      engineControls.set(r.enabledKey, { key: r.enabledKey, groupId: group.id, el: box, off: null, role: 'region-enabled', label: `${r.label}: enabled` });
     } else {
       on.append(make('span', 'muted small', 'Always'));
     }
@@ -789,9 +1044,10 @@ function buildRegionTable(group: SettingGroup): HTMLElement {
       num.max = String(r.maxMax);
       num.step = '1';
       num.id = describeId(r.maxKey, 'input');
-      num.setAttribute('aria-label', `${r.label}: camera cap (${r.maxKey})`);
+      num.title = r.maxKey;
+      num.setAttribute('aria-label', `${r.label}: camera cap`);
       max.append(num);
-      engineControls.set(r.maxKey, { key: r.maxKey, groupId: group.id, el: num, off: null, role: 'region-field' });
+      engineControls.set(r.maxKey, { key: r.maxKey, groupId: group.id, el: num, off: null, role: 'region-field', label: `${r.label}: camera cap` });
     } else {
       max.append(make('span', 'muted small', 'n/a'));
     }
@@ -806,7 +1062,8 @@ function buildRegionTable(group: SettingGroup): HTMLElement {
       input.autocomplete = 'off';
       input.spellcheck = false;
       input.id = describeId(key, 'input');
-      input.setAttribute('aria-label', `${r.label}: ${what} (${key})`);
+      input.title = key;
+      input.setAttribute('aria-label', `${r.label}: ${what}`);
       input.placeholder = what;
       more.append(input);
       let off: HTMLInputElement | null = null;
@@ -818,7 +1075,7 @@ function buildRegionTable(group: SettingGroup): HTMLElement {
         wrap.append(off, make('span', 'small', 'Turn pack off'));
         more.append(wrap);
       }
-      engineControls.set(key, { key, groupId: group.id, el: input, off, role: 'region-field' });
+      engineControls.set(key, { key, groupId: group.id, el: input, off, role: 'region-field', label: `${r.label}: ${what}` });
     }
     tr.append(name, on, max, more);
     body.append(tr);
@@ -846,7 +1103,7 @@ function buildEngineSettings(): void {
     if (group.regions !== undefined) section.append(buildRegionTable(group));
     section.append(make('p', 'note', ENGINE_SETTINGS_RESTART_NOTE));
     const row = make('div', 'button-row left');
-    const save = make('button', 'primary', `Save ${group.title.toLowerCase()} settings`);
+    const save = make('button', 'primary', groupSaveLabel(group));
     save.type = 'button';
     save.addEventListener('click', () => {
       void saveEngineGroup(group);
@@ -858,10 +1115,47 @@ function buildEngineSettings(): void {
     section.append(row, status);
     const markDirty = (): void => {
       engineDirty.add(group.id);
+      clearGroupErrors(group.id);
+      syncWarnings();
     };
     section.addEventListener('input', markDirty);
     section.addEventListener('change', markDirty);
     host.append(section);
+  }
+}
+
+/** Shows each caution only while the field holds the value it warns about. */
+function syncWarnings(): void {
+  for (const c of engineControls.values()) {
+    if (c.warn === undefined) continue;
+    setHidden(c.warn.el, !warningActive(c.warn.model, c.el.value));
+  }
+}
+
+function clearGroupErrors(groupId: string): void {
+  for (const c of engineControls.values()) {
+    if (c.groupId !== groupId) continue;
+    if (c.el.getAttribute('aria-invalid') !== null) c.el.removeAttribute('aria-invalid');
+    if (c.error !== undefined) {
+      setHidden(c.error, true);
+      setText(c.error, '');
+    }
+  }
+  const status = document.getElementById(`group-status-${groupId}`);
+  if (status !== null) clearStatus(status);
+}
+
+/** Marks a field invalid, says why next to it, and (for the first one) scrolls to and focuses it. */
+function flagField(c: EngineControl, message: string, focus: boolean): void {
+  c.el.setAttribute('aria-invalid', 'true');
+  if (c.error !== undefined) {
+    setText(c.error, message);
+    setHidden(c.error, false);
+    c.el.setAttribute('aria-describedby', `${c.el.getAttribute('aria-describedby') ?? ''} ${c.error.id}`.trim());
+  }
+  if (focus) {
+    c.el.scrollIntoView({ block: 'center' });
+    c.el.focus({ preventScroll: true });
   }
 }
 
@@ -884,6 +1178,7 @@ function fillEngineSettings(state: PublicState): void {
       c.el.value = m.value;
       if (c.el instanceof HTMLInputElement) c.el.placeholder = m.placeholder;
       if (c.off !== null) c.off.checked = m.isSet && m.value === '';
+      if (c.remove !== undefined) c.remove.disabled = !m.isSet;
     }
     for (const row of regionRowModels(group.regions ?? [], cur)) {
       const fill = (key: string | null, value: string, placeholder: string, offOn: boolean): void => {
@@ -904,18 +1199,29 @@ function fillEngineSettings(state: PublicState): void {
       fill(row.districtsKey, row.districts, row.districtsPlaceholder, distSet && row.districts === '');
     }
   }
+  syncWarnings();
 }
 
 async function saveEngineSettingsPatch(groupId: string, patch: Record<string, string | null>): Promise<void> {
   const status = byId(`group-status-${groupId}`);
   if (Object.keys(patch).length === 0) {
-    setText(status, 'There is nothing to save yet.');
+    setStatus(status, 'There is nothing to save yet.');
     return;
   }
-  setText(status, 'Saving…');
+  setStatus(status, 'Saving…', 'busy');
   try {
     const r = await api.saveEngineSettings({ patch });
-    setText(status, settingsResultMessage(r));
+    clearGroupErrors(groupId);
+    setStatus(status, settingsResultMessage(r, (k) => engineControls.get(k)?.label ?? k), r.ok ? 'ok' : 'error', r.ok && r.restarting ? 10 : undefined);
+    if (!r.ok) {
+      let first = true;
+      for (const [key, message] of Object.entries(r.invalid)) {
+        const c = engineControls.get(key);
+        if (c === undefined) continue;
+        flagField(c, message, first);
+        first = false;
+      }
+    }
     if (r.ok) {
       engineDirty.delete(groupId);
       for (const c of engineControls.values()) {
@@ -924,12 +1230,28 @@ async function saveEngineSettingsPatch(groupId: string, patch: Record<string, st
       if (current !== null) fillEngineSettings(current);
     }
   } catch (err) {
-    setText(status, `Could not save the settings. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the settings. ${err instanceof Error ? err.message : String(err)}`, 'error');
   }
 }
 
 async function saveEngineGroup(group: SettingGroup): Promise<void> {
   if (current === null) return;
+  // A half-typed number leaves the box reading '' even though it holds text; that is not a clear (SET-03).
+  clearGroupErrors(group.id);
+  let badFirst = true;
+  let anyBad = false;
+  for (const c of engineControls.values()) {
+    if (c.groupId !== group.id || !(c.el instanceof HTMLInputElement) || c.el.type !== 'number') continue;
+    if (c.el.validity.badInput) {
+      anyBad = true;
+      flagField(c, 'Enter a whole number, or clear the box to use the default.', badFirst);
+      badFirst = false;
+    }
+  }
+  if (anyBad) {
+    setStatus(byId(`group-status-${group.id}`), 'Nothing was saved. Fix the highlighted field first.', 'error');
+    return;
+  }
   const inputs: Record<string, FieldInput> = {};
   for (const c of engineControls.values()) {
     if (c.groupId === group.id) inputs[c.key] = controlValue(c);
@@ -954,7 +1276,12 @@ function fillSelect(sel: HTMLSelectElement, options: ReadonlyArray<{ value: stri
 
 function renderAppSettings(state: PublicState): void {
   const a = state.app;
-  byId<HTMLInputElement>('app-launch-at-login').checked = a.launchAtLogin;
+  const loginOk = launchAtLoginAvailable(state.versions);
+  const login = byId<HTMLInputElement>('app-launch-at-login');
+  login.checked = a.launchAtLogin && loginOk;
+  login.disabled = !loginOk;
+  setHidden(byId('app-login-note'), loginOk);
+  setText(byId('app-login-note'), LOGIN_UNAVAILABLE_NOTE);
   byId<HTMLInputElement>('app-auto-restart').checked = a.autoRestartOnCrash;
   byId<HTMLSelectElement>('app-update-interval').value = a.updateCheckInterval;
   byId<HTMLSelectElement>('app-log-level').value = a.logLevel;
@@ -974,30 +1301,52 @@ function renderAppSettings(state: PublicState): void {
   );
 }
 
-function saveAppSetting(patch: Parameters<OpenTacSetupApi['setAppSettings']>[0], what: string): void {
-  api.setAppSettings(patch).catch((err: unknown) => {
-    reportFailure(`Could not save ${what}.`, err);
-  });
+function saveAppSetting(
+  patch: Parameters<OpenTacSetupApi['setAppSettings']>[0],
+  what: string,
+  statusId: string,
+  okText = 'Saved.',
+): void {
+  api
+    .setAppSettings(patch)
+    .then(() => {
+      setStatus(byId(statusId), okText);
+    })
+    .catch((err: unknown) => {
+      reportFailure(`Could not save ${what}.`, err);
+    });
+}
+
+/** Runs a shell action and, when it went through, says so next to the button. */
+function runActionThen(name: ActionName, statusId: string, okText: string): void {
+  api
+    .action(name)
+    .then(() => {
+      setStatus(byId(statusId), okText);
+    })
+    .catch((err: unknown) => {
+      reportFailure(`Could not do that (${labelForAction(name)}).`, err);
+    });
 }
 
 async function saveProxy(): Promise<void> {
   const status = byId('app-proxy-status');
   const https = validateProxyUrl(byId<HTMLInputElement>('app-proxy-https').value);
   if (!https.ok) {
-    setText(status, https.reason);
+    setStatus(status, plainProxyReason(https.reason), 'error');
     return;
   }
   const no = validateNoProxy(byId<HTMLInputElement>('app-proxy-no').value);
   if (!no.ok) {
-    setText(status, no.reason);
+    setStatus(status, plainProxyReason(no.reason), 'error');
     return;
   }
   try {
     await api.setAppSettings({ proxy: { httpsProxy: https.value, noProxy: no.value } });
     proxyDirty = false;
-    setText(status, 'Proxy saved.');
+    setStatus(status, 'Proxy saved.');
   } catch (err) {
-    setText(status, `Could not save the proxy. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the proxy. ${err instanceof Error ? err.message : String(err)}`, 'error');
   }
 }
 
@@ -1005,16 +1354,16 @@ async function saveRemote(reset: boolean): Promise<void> {
   const status = byId('app-remote-status');
   const checked = reset ? ({ ok: true, value: null } as const) : validateEngineRemoteUrl(byId<HTMLInputElement>('app-engine-remote').value);
   if (!checked.ok) {
-    setText(status, checked.reason);
+    setStatus(status, checked.reason, 'error');
     return;
   }
   try {
     await api.setAppSettings({ engineRemoteUrl: checked.value });
     remoteDirty = false;
     if (reset) byId<HTMLInputElement>('app-engine-remote').value = '';
-    setText(status, reset ? `The default mirror will be used. ${APP_NEXT_LAUNCH_NOTE}` : `Mirror address saved. ${APP_NEXT_LAUNCH_NOTE}`);
+    setStatus(status, reset ? `The default mirror will be used. ${APP_NEXT_LAUNCH_NOTE}` : `Mirror address saved. ${APP_NEXT_LAUNCH_NOTE}`);
   } catch (err) {
-    setText(status, `Could not save the mirror address. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the mirror address. ${err instanceof Error ? err.message : String(err)}`, 'error');
   }
 }
 
@@ -1045,17 +1394,16 @@ function wireSettings(): void {
   setText(byId('app-proxy-note'), PROXY_NOTE);
 
   byId<HTMLInputElement>('app-launch-at-login').addEventListener('change', (e) => {
-    saveAppSetting({ launchAtLogin: (e.target as HTMLInputElement).checked }, 'the login setting');
+    saveAppSetting({ launchAtLogin: (e.target as HTMLInputElement).checked }, 'the login setting', 'app-behaviour-status');
   });
   byId<HTMLInputElement>('app-auto-restart').addEventListener('change', (e) => {
-    saveAppSetting({ autoRestartOnCrash: (e.target as HTMLInputElement).checked }, 'the crash setting');
+    saveAppSetting({ autoRestartOnCrash: (e.target as HTMLInputElement).checked }, 'the crash setting', 'app-behaviour-status');
   });
   byId<HTMLSelectElement>('app-update-interval').addEventListener('change', (e) => {
-    saveAppSetting({ updateCheckInterval: (e.target as HTMLSelectElement).value as UpdateCheckInterval }, 'the update interval');
+    saveAppSetting({ updateCheckInterval: (e.target as HTMLSelectElement).value as UpdateCheckInterval }, 'the update interval', 'app-behaviour-status');
   });
   byId<HTMLSelectElement>('app-log-level').addEventListener('change', (e) => {
-    saveAppSetting({ logLevel: (e.target as HTMLSelectElement).value as LogLevelSetting }, 'the log level');
-    setText(byId('app-status'), `Log level saved. ${APP_NEXT_LAUNCH_NOTE}`);
+    saveAppSetting({ logLevel: (e.target as HTMLSelectElement).value as LogLevelSetting }, 'the log level', 'app-log-status', `Saved. ${APP_NEXT_LAUNCH_NOTE}`);
   });
   for (const id of ['app-proxy-https', 'app-proxy-no']) {
     byId(id).addEventListener('input', () => {
@@ -1075,10 +1423,10 @@ function wireSettings(): void {
     void saveRemote(true);
   });
   byId('btn-open-data').addEventListener('click', () => {
-    runAction('openDataFolder');
+    runActionThen('openDataFolder', 'app-status', 'Opened the data folder.');
   });
   byId('btn-open-logs').addEventListener('click', () => {
-    runAction('showLogs');
+    runActionThen('showLogs', 'app-status', 'Opened the logs folder.');
   });
   byId('btn-forget-usb').addEventListener('click', () => {
     runAction('forgetUsbDevices');
@@ -1096,24 +1444,34 @@ function markAiDirty(): void {
   if (current !== null) updateAiVisibility(current);
 }
 
+/** A model name belongs to its provider: changing the provider clears it, and an old test result goes stale (SET-07). */
+function onAiProviderChange(): void {
+  const provider = aiProviderSelect().value;
+  const saved = current?.ai;
+  byId<HTMLInputElement>('ai-model').value = saved !== undefined && saved.provider === provider ? (saved.model ?? '') : '';
+  byId<HTMLSelectElement>('ai-model-picker').value = '';
+  setHidden(byId('ai-test-result'), true);
+  markAiDirty();
+}
+
 async function saveKey(provider: 'openrouter' | 'xai', clear: boolean): Promise<void> {
   const input = byId<HTMLInputElement>(`key-${provider}`);
   const status = byId(`state-key-${provider}`);
   const key = clear ? '' : input.value;
   if (!clear && key === '') {
-    setText(status, 'Type or paste a key first.');
+    setStatus(status, 'Type or paste a key first.', 'error');
     return;
   }
   const payload = { provider, key };
   if (!isSetAiKeyPayload(payload)) {
-    setText(status, 'A key cannot contain spaces or line breaks.');
+    setStatus(status, 'A key cannot contain spaces or line breaks.', 'error');
     return;
   }
   try {
     await api.setAiKey(payload);
-    setText(status, clear ? 'Key removed.' : 'Key saved.');
+    setStatus(status, clear ? 'Removed.' : 'Saved.');
   } catch (err) {
-    setText(status, `Could not save the key. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the key. ${err instanceof Error ? err.message : String(err)}`, 'error');
   } finally {
     input.value = '';
   }
@@ -1126,15 +1484,19 @@ async function saveAi(): Promise<void> {
   const provider = aiProviderSelect().value;
   const payload = { provider, model: model === '' ? null : model, ollamaHost: host === '' ? null : host };
   if (!isSetAiPayload(payload)) {
-    setText(status, 'The Ollama address should look like http://127.0.0.1:11434 and the model name must be plain text.');
+    setStatus(status, 'The Ollama address should look like http://127.0.0.1:11434 and the model name must be plain text.', 'error');
     return;
   }
   try {
+    const providerChanged = current !== null && current.ai.provider !== provider;
+    if (providerChanged) setStatus(status, 'Saving. The engine is restarting to apply the new provider…', 'busy');
     await api.setAi(payload);
     aiDirty = false;
-    setText(status, 'AI settings saved.');
+    setHidden(byId('ai-test-result'), true);
+    setStatus(status, providerChanged ? 'Saved. The engine has restarted with the new provider.' : 'Saved.');
+    if (current !== null) updateAiVisibility(current);
   } catch (err) {
-    setText(status, `Could not save the AI settings. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not save the AI settings. ${err instanceof Error ? err.message : String(err)}`, 'error');
   }
 }
 
@@ -1144,24 +1506,32 @@ function showTestResult(r: AiTestResultPublic): void {
   const headline = byId('ai-test-headline');
   headline.className = r.ok ? 'ok' : 'bad';
   setText(headline, r.ok ? 'The test worked.' : 'The test failed.');
-  setText(byId('ai-test-text'), r.text === '' ? (r.ok ? '(The model sent an empty reply.)' : '') : r.text);
-  setHidden(byId('ai-test-text'), r.text === '' && !r.ok);
-  const meta: string[] = [`Took ${r.latencyMs} ms`];
-  if (r.finishReason !== null) meta.push(`finish reason: ${r.finishReason}`);
-  if (r.error !== null) meta.push(`error: ${r.error}`);
-  setText(byId('ai-test-meta'), meta.join(', '));
+  // The summary sentence first; the engine's raw reply and the technical figures are behind Details.
+  const reply = parseAiTestReply(r.text);
+  const summary = r.ok ? (reply.summary === '' ? '(The model sent an empty reply.)' : reply.summary) : (r.error ?? reply.summary);
+  setText(byId('ai-test-summary'), summary);
+  setHidden(byId('ai-test-summary'), summary === '');
+  setText(byId('ai-test-meta'), `Took ${r.latencyMs} ms.`);
+  const extra: string[] = [];
+  if (r.finishReason !== null) extra.push(`Finish reason: ${r.finishReason}.`);
+  if (!r.ok && r.error !== null && reply.raw !== '') extra.push(`Error: ${r.error}`);
+  setText(byId('ai-test-text'), reply.raw);
+  setHidden(byId('ai-test-text'), reply.raw === '' || (reply.raw === summary && extra.length === 0));
+  setText(byId('ai-test-extra'), extra.join(' '));
+  setHidden(byId('ai-test-details'), reply.raw === '' && extra.length === 0);
+  if (reply.raw === summary && extra.length === 0) setHidden(byId('ai-test-details'), true);
 }
 
 async function runAiTest(): Promise<void> {
   const btn = byId<HTMLButtonElement>('btn-test-ai');
   btn.disabled = true;
-  setText(byId('ai-save-status'), 'Testing the saved settings…');
+  setStatus(byId('ai-save-status'), 'Testing the saved settings…', 'busy');
   try {
     const r = await api.testAi();
     showTestResult(r);
-    setText(byId('ai-save-status'), '');
+    setStatus(byId('ai-save-status'), '');
   } catch (err) {
-    setText(byId('ai-save-status'), `The test could not run. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(byId('ai-save-status'), `The test could not run. ${err instanceof Error ? err.message : String(err)}`, 'error');
   } finally {
     btn.disabled = false;
   }
@@ -1171,28 +1541,49 @@ async function loadOllamaModels(): Promise<void> {
   const status = byId('ollama-status');
   const btn = byId<HTMLButtonElement>('btn-load-ollama');
   btn.disabled = true;
-  setText(status, 'Loading models…');
+  setStatus(status, 'Loading models…', 'busy');
   try {
     const r = await api.listOllamaModels();
-    const list = byId('ai-model-options');
-    list.replaceChildren(
+    const picker = byId<HTMLSelectElement>('ai-model-picker');
+    picker.replaceChildren(
+      make('option', undefined, 'Choose a model…'),
       ...r.models.map((m) => {
-        const o = make('option');
+        const o = make('option', undefined, m);
         o.value = m;
         return o;
       }),
     );
-    if (r.error !== null) setText(status, r.error);
-    else if (r.models.length === 0) setText(status, 'No models were found on that Ollama server.');
-    else setText(status, `Found ${r.models.length} ${r.models.length === 1 ? 'model' : 'models'}. Pick one in the Model box.`);
+    picker.options[0]!.value = '';
+    picker.value = r.models.includes(byId<HTMLInputElement>('ai-model').value.trim()) ? byId<HTMLInputElement>('ai-model').value.trim() : '';
+    setHidden(picker, r.models.length === 0);
+    if (r.error !== null) setStatus(status, r.error, 'error');
+    else if (r.models.length === 0) setStatus(status, 'No models were found on that Ollama server.', 'error');
+    else setStatus(status, `Found ${r.models.length} ${r.models.length === 1 ? 'model' : 'models'}. Choose one from the list, or type a name.`, 'ok', 12);
   } catch (err) {
-    setText(status, `Could not load models. ${err instanceof Error ? err.message : String(err)}`);
+    setStatus(status, `Could not load models. ${err instanceof Error ? err.message : String(err)}`, 'error');
   } finally {
     btn.disabled = false;
   }
 }
 
 function wireControls(): void {
+  // Links in our own text (the credit line) open in the browser, never inside this window.
+  document.addEventListener('click', (e: MouseEvent) => {
+    const a = (e.target as Element | null)?.closest<HTMLAnchorElement>('a[data-external]');
+    if (a === null || a === undefined) return;
+    e.preventDefault();
+    openExternal(a.href);
+  });
+  // Using any control in Preferences clears the old status lines (capture phase: before the control's own handler sets a new one).
+  for (const type of ['input', 'change', 'click'] as const) {
+    byId('panel-preferences').addEventListener(type, clearFinishedStatuses, true);
+  }
+  byId<HTMLInputElement>('engine-show-names').addEventListener('change', (e) => {
+    byId('tabpanel-engine').classList.toggle('show-names', (e.target as HTMLInputElement).checked);
+  });
+  byId('btn-upstream').addEventListener('click', () => {
+    openExternal(UPSTREAM_URL);
+  });
   byId('btn-prefs-close').addEventListener('click', closeOverlay);
   byId('btn-about-close').addEventListener('click', closeOverlay);
   byId('btn-licenses').addEventListener('click', () => {
@@ -1214,21 +1605,36 @@ function wireControls(): void {
 
   byId<HTMLInputElement>('pref-update-on-launch').addEventListener('change', (e) => {
     const checked = (e.target as HTMLInputElement).checked;
-    api.setPrefs({ updateCheckOnLaunch: checked }).catch((err: unknown) => {
-      reportFailure('Could not save that setting.', err);
-    });
+    api
+      .setPrefs({ updateCheckOnLaunch: checked })
+      .then(() => {
+        setStatus(byId('updates-status'), 'Saved.');
+      })
+      .catch((err: unknown) => {
+        reportFailure('Could not save that setting.', err);
+      });
   });
   for (const radio of Array.from(document.querySelectorAll<HTMLInputElement>('input[name="channel"]'))) {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
       const channel = radio.value as Channel;
-      api.setPrefs({ channel }).catch((err: unknown) => {
-        reportFailure('Could not change the engine channel.', err);
-      });
+      api
+        .setPrefs({ channel })
+        .then(() => {
+          setStatus(byId('updates-status'), 'Saved.');
+        })
+        .catch((err: unknown) => {
+          reportFailure('Could not change the engine channel.', err);
+        });
     });
   }
 
-  aiProviderSelect().addEventListener('change', markAiDirty);
+  aiProviderSelect().addEventListener('change', onAiProviderChange);
+  byId<HTMLSelectElement>('ai-model-picker').addEventListener('change', (e) => {
+    const v = (e.target as HTMLSelectElement).value;
+    if (v !== '') byId<HTMLInputElement>('ai-model').value = v;
+    markAiDirty();
+  });
   byId('ai-model').addEventListener('input', markAiDirty);
   byId('ai-ollama-host').addEventListener('input', markAiDirty);
   byId('btn-save-ai').addEventListener('click', () => {
@@ -1244,7 +1650,7 @@ function wireControls(): void {
     byId(`btn-save-key-${p}`).addEventListener('click', () => {
       void saveKey(p, false);
     });
-    byId(`btn-clear-key-${p}`).addEventListener('click', () => {
+    armedButton(byId<HTMLButtonElement>(`btn-clear-key-${p}`), 'Click again to remove', () => {
       void saveKey(p, true);
     });
     byId(`key-${p}`).addEventListener('keydown', (e: Event) => {
@@ -1276,6 +1682,7 @@ function render(state: PublicState): void {
   current = state;
   // While About is being closed, the shell passes through a Preferences state; skip drawing it.
   if (closingOverlay && state.preferencesOpen) return;
+  trackPhase(state);
   renderHeader(state);
   renderNotices(state);
 

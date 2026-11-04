@@ -96,12 +96,20 @@ main {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 24px 28px;
+  /* No vertical padding here: sticky bars inside measure from the scroller's padding edge, so any
+     padding above or below would let scrolled content show through the gap. The panel carries it. */
+  padding: 0 24px;
 }
 
 .panel {
   max-width: 720px;
   margin: 0 auto;
+  padding: 20px 0 28px;
+}
+
+/* Panels that end in a sticky action bar sit flush with the bottom of the window. */
+.panel:has(.sticky-actions) {
+  padding-bottom: 0;
 }
 
 h2 {
@@ -138,7 +146,7 @@ p {
 }
 
 .small {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .mono {
@@ -147,10 +155,45 @@ p {
 
 .note {
   color: var(--fg-muted);
+  font-size: 13px;
 }
 
 .note:empty {
   display: none;
+}
+
+.tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tag-warn {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.status-line {
+  min-height: 1.5em;
+}
+
+.env-name {
+  display: none;
+  font-family: var(--mono);
+}
+
+#tabpanel-engine.show-names .env-name {
+  display: inline;
+}
+
+.test-summary {
+  margin: 4px 0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
 }
 
 .warn-text {
@@ -166,6 +209,7 @@ p {
 }
 
 .detail {
+  white-space: pre-wrap;
   padding: 8px 10px;
   border-radius: 6px;
   background: var(--bg-sunken);
@@ -215,6 +259,33 @@ progress::-webkit-progress-bar {
   border-radius: 5px;
 }
 
+/* No value attribute means "working, length unknown". With appearance:none Chromium draws no
+   indeterminate animation of its own, so draw a sliding stripe on the element itself. */
+progress:not([value]) {
+  background: linear-gradient(90deg, var(--bg-sunken) 0%, var(--accent) 50%, var(--bg-sunken) 100%) 0 0 / 200% 100%;
+  animation: progress-indeterminate 1.4s linear infinite;
+}
+
+progress:not([value])::-webkit-progress-bar {
+  background: transparent;
+}
+
+@keyframes progress-indeterminate {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  progress:not([value]) {
+    animation: none;
+    background: repeating-linear-gradient(90deg, var(--accent) 0 24px, var(--bg-sunken) 24px 48px);
+  }
+}
+
 progress::-webkit-progress-value {
   background: var(--accent);
   border-radius: 5px;
@@ -242,7 +313,8 @@ progress::-webkit-progress-value {
 .commit-list {
   margin: 0 0 12px;
   padding: 0;
-  max-height: 220px;
+  max-height: 38vh;
+  min-height: 132px;
   overflow-y: auto;
   list-style: none;
   border: 1px solid var(--border);
@@ -350,6 +422,7 @@ summary {
 
 .secondary-row {
   margin-top: 8px;
+  margin-bottom: 20px;
   justify-content: flex-start;
 }
 
@@ -458,14 +531,22 @@ select {
 }
 
 fieldset.radios {
-  margin: 0 0 12px;
+  min-width: 0;
+  margin: 6px 0 12px;
   padding: 0;
   border: 0;
 }
 
 fieldset.radios legend {
-  margin-bottom: 6px;
+  float: left;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0;
   font-weight: 600;
+}
+
+fieldset.radios legend + * {
+  clear: both;
 }
 
 .test-result {
@@ -502,8 +583,24 @@ fieldset.radios legend {
   background: var(--bg-raised);
 }
 
+/* Each entry reads as a list item: the name on its own line, the explanation under it. */
 .settings-map .link-button {
+  display: block;
   font-weight: 650;
+  text-align: left;
+  text-decoration: none;
+}
+
+.settings-map .link-button::after {
+  content: ' \203A';
+}
+
+.settings-map .link-button:hover {
+  text-decoration: underline;
+}
+
+.settings-map .muted {
+  display: block;
 }
 
 .key-list {
@@ -534,7 +631,7 @@ fieldset.radios legend {
 
 .key-state {
   margin-left: auto;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -555,7 +652,7 @@ fieldset.radios legend {
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -568,9 +665,16 @@ fieldset.radios legend {
 .key-fields label,
 .settings-group .field > label {
   display: block;
-  margin-bottom: 2px;
-  font-size: 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
   font-weight: 600;
+}
+
+/* The focus ring is drawn outside the field; keep it clear of the label above. */
+.key-fields input:focus-visible,
+.settings-group input:focus-visible,
+.settings-group select:focus-visible {
+  outline-offset: 1px;
 }
 
 .key-row .button-row,
@@ -621,11 +725,21 @@ fieldset.radios legend {
   margin-bottom: 4px;
 }
 
+/* A disabled field is plainly greyed out, and its placeholder carries the explanation. */
 input[type='number']:disabled,
 input[type='password']:disabled,
 input[type='text']:disabled,
 select:disabled {
-  opacity: 0.6;
+  background: var(--bg-sunken);
+  border-style: dashed;
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+input:disabled::placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+  opacity: 1;
 }
 
 /* USB picker page */
@@ -686,4 +800,54 @@ select:disabled {
   display: block;
   color: var(--fg-muted);
   font: 12px var(--mono);
+}
+
+/* Decision buttons stay visible however long the panel is. */
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: 14px;
+  padding: 12px 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.attribution a,
+.attribution-strong a {
+  color: var(--accent);
+}
+
+.field-error {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+input[aria-invalid='true'],
+select[aria-invalid='true'] {
+  border-color: var(--danger);
+  outline-color: var(--danger);
+}
+
+.status-error {
+  color: var(--danger);
+}
+
+/* Keep the Preferences tab bar reachable on small windows: one scrolling line that sticks. */
+#panel-preferences .tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin-top: 0;
+  padding-top: 10px;
+  background: var(--bg);
+}
+
+#panel-preferences .tabs button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }

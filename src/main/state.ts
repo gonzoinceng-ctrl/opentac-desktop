@@ -59,8 +59,9 @@ export function defaultState(): ShellState {
     skippedCommit: null,
     mainWindowBounds: null,
     usbDevices: [],
-    // Owner's default: local Ollama summaries (verified with qwen3.5:9b-mlx); voice stays OpenAI/Gemini.
-    ai: { provider: 'ollama', model: 'qwen3.5:9b-mlx', ollamaHost: null },
+    // OpenAI is the engine's own path: no gateway, no placeholder key, the engine's OpenAI key row stays
+    // editable (voice needs it). Local Ollama is an explicit choice in Preferences (DECISIONS 2026-11-04).
+    ai: { provider: 'openai', model: null, ollamaHost: null },
     app: defaultAppSettings(),
   };
 }
@@ -265,35 +266,107 @@ async function backUpBadFile(file: string, backupFile: string, log: StateLog): P
   }
 }
 
+/** What {@link loadStateReport} found. `reset` is true when a damaged file was replaced by defaults. */
+export interface LoadStateReport {
+  state: ShellState;
+  reset: boolean;
+  /** Names of settings recovered from the damaged file (channel, port, AI choice, app settings). */
+  salvaged: string[];
+}
+
+/**
+ * Best effort recovery from a damaged state file: the pieces that matter to the user (the channel,
+ * the pinned port that browser state is keyed to, the summary provider and the App settings) are
+ * validated one by one and kept when they are fine. Unparseable text falls back to a pattern match
+ * for the channel and port. Never throws.
+ */
+function salvageState(text: string): { state: ShellState; salvaged: string[] } {
+  const state = defaultState();
+  const salvaged: string[] = [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    parsed = undefined;
+  }
+  if (isRecord(parsed)) {
+    const ch = parsed['channel'];
+    if (typeof ch === 'string' && CHANNELS.includes(ch as Channel)) {
+      state.channel = ch as Channel;
+      salvaged.push('update channel');
+    }
+    const port = readLastPort(parsed['lastPort']);
+    if (port.ok && port.value !== null) {
+      state.lastPort = port.value;
+      salvaged.push('port');
+    }
+    if (parsed['ai'] !== undefined) {
+      const ai = readAi(parsed['ai']);
+      if (ai.ok) {
+        state.ai = ai.value;
+        salvaged.push('summary provider');
+      }
+    }
+    if (parsed['app'] !== undefined) {
+      const app = readApp(parsed['app']);
+      if (app.ok) {
+        state.app = app.value;
+        salvaged.push('App settings');
+      }
+    }
+  } else {
+    const ch = /"channel"\s*:\s*"(stable|candidate|upstream)"/.exec(text);
+    if (ch?.[1] !== undefined) {
+      state.channel = ch[1] as Channel;
+      salvaged.push('update channel');
+    }
+    const port = /"lastPort"\s*:\s*(\d{1,5})\b/.exec(text);
+    const n = port?.[1] === undefined ? NaN : Number(port[1]);
+    if (Number.isInteger(n) && n > 0 && n <= 65535) {
+      state.lastPort = n;
+      salvaged.push('port');
+    }
+  }
+  return { state, salvaged };
+}
+
 /**
  * Loads state from disk. Missing file gives defaults; unreadable or invalid content is copied
- * to backupFile, a warning is logged and defaults are returned.
+ * to backupFile, a warning is logged and defaults (plus whatever could be salvaged) are returned.
  */
-export async function loadState(file: string, backupFile: string, log: StateLog): Promise<ShellState> {
+export async function loadStateReport(file: string, backupFile: string, log: StateLog): Promise<LoadStateReport> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch (err) {
     if (isNotFound(err)) {
       log.info(`no state file at ${file}; using defaults`);
-      return defaultState();
+      return { state: defaultState(), reset: false, salvaged: [] };
     }
     log.warn(`state file unreadable (${errorMessage(err)}); using defaults`);
     await backUpBadFile(file, backupFile, log);
-    return defaultState();
+    return { state: defaultState(), reset: true, salvaged: [] };
   }
 
   let reason: string;
   try {
     const result = validateState(JSON.parse(text) as unknown);
-    if (result.ok) return result.state;
+    if (result.ok) return { state: result.state, reset: false, salvaged: [] };
     reason = result.reason;
   } catch (err) {
     reason = `invalid JSON: ${errorMessage(err)}`;
   }
-  log.warn(`state file rejected (${reason}); backed up to ${backupFile}; using defaults`);
+  const { state, salvaged } = salvageState(text);
+  log.warn(
+    `state file rejected (${reason}); backed up to ${backupFile}; using defaults${salvaged.length > 0 ? ` and keeping ${salvaged.join(', ')}` : ''}`,
+  );
   await backUpBadFile(file, backupFile, log);
-  return defaultState();
+  return { state, reset: true, salvaged };
+}
+
+/** {@link loadStateReport} without the report. */
+export async function loadState(file: string, backupFile: string, log: StateLog): Promise<ShellState> {
+  return (await loadStateReport(file, backupFile, log)).state;
 }
 
 /**

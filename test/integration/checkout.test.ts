@@ -92,7 +92,7 @@ describe('clone', () => {
   it('refuses to clone into a non-empty folder and leaves it alone', async () => {
     await mkdir(fx.checkoutDir, { recursive: true });
     await writeFile(join(fx.checkoutDir, 'precious.txt'), 'keep');
-    expect(await codeOf(mgr.clone(fx.mirrorUrl, () => undefined))).toBe('CLONE_FAILED');
+    expect(await codeOf(mgr.clone(fx.mirrorUrl, () => undefined))).toBe('NOT_A_REPO');
     expect(await readFile(join(fx.checkoutDir, 'precious.txt'), 'utf8')).toBe('keep');
   });
 
@@ -189,6 +189,21 @@ describe('status and fetch', () => {
     await mgr.checkoutDetached(stable.commit);
     expect(await mgr.head()).toBe(fx.commits.c3);
     expect(await mgr.status(stable)).toMatchObject({ behind: 0, ahead: 0, isAncestor: true });
+  });
+
+  it('fetches from a one-run remote without rewriting origin, and counts commits uncapped (FD-12, NEW-2)', async () => {
+    await cloneAndCheckout();
+    const originBefore = await mgr.remoteUrl();
+    await fx.moveStable(fx.commits.c3);
+    // Point origin at a dead address: the one-run URL must be what is fetched from.
+    await mgr.setRemoteUrl('/nonexistent/dead.git');
+    await mgr.fetch({ remoteUrl: fx.mirrorUrl });
+    expect(await mgr.remoteUrl()).toBe('/nonexistent/dead.git');
+    expect((await mgr.resolveTarget('stable')).commit).toBe(fx.commits.c3);
+    await mgr.setRemoteUrl(originBefore);
+    expect(await mgr.countCommits(fx.commits.c1, fx.commits.c4)).toBe(3);
+    expect(await mgr.countCommits(fx.commits.c3, fx.commits.c3)).toBe(0);
+    expect(await codeOf(mgr.countCommits('-x', fx.commits.c3))).toBe('BAD_REF');
   });
 
   it('detects a non-ancestor target when stable is moved backwards', async () => {

@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+
 import { ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, Shell } from 'electron';
 
@@ -14,6 +16,7 @@ import {
   isSetAiPayload,
   isUsbChoice,
 } from '../shared/ipc.js';
+import { redactHomeDir } from '../shared/redact.js';
 import type { PublicState } from '../shared/ipc.js';
 import type { ControllerApi } from './contracts.js';
 import type { Logger } from './logger.js';
@@ -77,6 +80,13 @@ export function registerIpc(opts: IpcOptions): () => void {
     throw new Error('invalid payload');
   }
 
+  const openFolder = async (what: string, dir: string): Promise<void> => {
+    log.info(`opening the ${what}: ${redactHomeDir(dir, homedir())}`);
+    const err = await shell.openPath(dir);
+    if (err !== '') log.warn(`could not open the ${what}: ${err}`);
+    else log.info(`opened the ${what}`);
+  };
+
   // Shared with the engine window.
   handle(IPC.getVersions, () => controller.versions());
   handle(IPC.openExternal, async (_e, url) => {
@@ -84,8 +94,7 @@ export function registerIpc(opts: IpcOptions): () => void {
     await shell.openExternal(url);
   });
   handle(IPC.openLogsFolder, async () => {
-    const err = await shell.openPath(paths.logsDir);
-    if (err !== '') log.warn(`could not open the logs folder: ${err}`);
+    await openFolder('logs folder', paths.logsDir);
   });
 
   // Setup window only.
@@ -93,13 +102,11 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle(IPC.action, async (_e, name) => {
     if (!isActionName(name)) invalid();
     if (name === 'showLogs') {
-      const err = await shell.openPath(paths.logsDir);
-      if (err !== '') log.warn(`could not open the logs folder: ${err}`);
+      await openFolder('logs folder', paths.logsDir);
       return;
     }
     if (name === 'openDataFolder') {
-      const err = await shell.openPath(paths.dataDir);
-      if (err !== '') log.warn(`could not open the data folder: ${err}`);
+      await openFolder('data folder', paths.dataDir);
       return;
     }
     await controller.action(name);

@@ -150,6 +150,27 @@ describe('createSecrets', () => {
     expect(await s.has('xai')).toBe(false);
   });
 
+  it('answers false within the timeout when safeStorage hangs (Keychain prompt), then recovers', async () => {
+    const { storage } = fakeStorage();
+    let release: (v: boolean) => void = () => undefined;
+    let hang = true;
+    const hanging: SafeStorageLike = {
+      ...storage,
+      isEncryptionAvailable: () => (hang ? new Promise<boolean>((r) => (release = r)) : true),
+    };
+    const log = logger();
+    const s = createSecrets({ file, safeStorage: hanging, log, availabilityTimeoutMs: 30 });
+    const started = Date.now();
+    expect(await s.available()).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(lines.join('\n')).toMatch(/did not answer within/);
+    // The user answers the prompt: the pending probe settles and the next call sees the real answer.
+    release(true);
+    await new Promise((r) => setTimeout(r, 5));
+    hang = false;
+    expect(await s.available()).toBe(true);
+  });
+
   it('never logs values', async () => {
     const { storage } = fakeStorage();
     const s = createSecrets({ file, safeStorage: storage, log: logger() });

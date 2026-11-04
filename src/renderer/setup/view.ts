@@ -17,20 +17,23 @@ import type {
   PublicState,
   SaveEngineSettingsResult,
   UsbDevicePublic,
+  Versions,
 } from '../../shared/ipc.js';
 import { isExternalUrl } from '../../shared/ipc.js';
 import type { Channel, LogLevelSetting, UpdateCheckInterval } from '../../shared/types.js';
 
 /** The attribution line required on the setup window, About panel, README and website. */
 export const ATTRIBUTION =
-  "OpenTac is an unofficial desktop app for God's Eye View by Bilawal Sidhu (MIT)";
+  "OpenTac is an unofficial desktop app for God’s Eye View by Bilawal Sidhu (MIT)";
 
-export const LICENSES_URL = 'https://opentac.icu/licenses';
+/** The licence notices live in the repository until opentac.icu is serving the site. */
+export const LICENSES_URL = 'https://github.com/gonzoinceng-ctrl/opentac-desktop/blob/main/THIRD_PARTY_NOTICES.md';
+export const UPSTREAM_URL = 'https://github.com/bilawalsidhu/gods-eye-view';
 
 export const VOICE_CAVEAT =
-  "Voice control uses OpenAI or Gemini — configure those in the engine's POWER UP panel.";
+  "Voice control uses OpenAI or Gemini — configure those in the engine’s POWER UP panel.";
 export const KEY_LOCK_CAVEAT =
-  "While a non-OpenAI summary provider is active, the engine's OpenAI key row is locked; switch back to OpenAI to edit it.";
+  "While a non-OpenAI summary provider is active, the engine’s OpenAI key row is locked; switch back to OpenAI to edit it.";
 
 export type PanelId = 'progress' | 'disclosure' | 'crash' | 'error' | 'about' | 'preferences';
 
@@ -87,7 +90,7 @@ export function phaseTitle(phase: Phase): string {
     case 'BOOT':
       return 'Getting ready';
     case 'CLONING':
-      return "Downloading God's Eye View";
+      return "Downloading God’s Eye View";
     case 'INSTALLING':
       return 'Installing dependencies';
     case 'STARTING':
@@ -111,15 +114,59 @@ export function phaseTitle(phase: Phase): string {
   }
 }
 
-/** Honest, plain explanation shown under the progress bar. Null when there is nothing to add. */
-export function phaseNote(phase: Phase): string | null {
+/** Why the progress panel is showing: decides which explanation goes under the bar. */
+export type ProgressReason = 'first-run' | 'reset' | 'update' | 'rollback' | 'repair';
+
+/**
+ * Works out the reason for the current progress phase from the phase before it. A download that
+ * starts from BOOT is the first run; one that starts from anywhere else is a reset. A reinstall
+ * that follows a download keeps that reason, one that follows an update is part of the update, and
+ * any other reinstall is a repair. Phases that are not part of the install chain have no reason.
+ */
+export function nextProgressReason(
+  prev: Phase | null,
+  phase: Phase,
+  prevReason: ProgressReason | null,
+  rollingBack: boolean,
+): ProgressReason | null {
+  if (rollingBack) return 'rollback';
   switch (phase) {
     case 'CLONING':
-      return "First launch downloads the God's Eye View source (~200 MB) and its dependencies (~400 MB) from GitHub and npm. This happens once and can take several minutes on a slow connection.";
+      return prev === null || prev === 'BOOT' ? 'first-run' : 'reset';
     case 'INSTALLING':
-      return 'Installing the dependencies (~400 MB) with npm. The first time can take a few minutes; afterwards this only runs when the dependencies change.';
+      if (prev === 'UPDATING') return 'update';
+      if (prev === 'ROLLING_BACK') return 'rollback';
+      if (prevReason !== null && (prev === 'CLONING' || prev === 'INSTALLING')) return prevReason;
+      return 'repair';
     case 'STARTING':
-      return 'The first start after an install can take up to a minute while the engine prepares its browser bundle.';
+      return prevReason;
+    default:
+      return null;
+  }
+}
+
+/** Honest, plain explanation shown under the progress bar. Null when there is nothing to add. */
+export function phaseNote(phase: Phase, reason: ProgressReason | null = null): string | null {
+  switch (phase) {
+    case 'CLONING':
+      return reason === 'reset'
+        ? 'Resetting downloads a fresh copy of the God’s Eye View source (about 200 MB). Your settings and keys are kept.'
+        : 'First launch downloads the God’s Eye View source (about 200 MB) from GitHub, then installs its dependencies from npm (about 400 MB on disk). This happens once and can take several minutes on a slow connection.';
+    case 'INSTALLING':
+      switch (reason) {
+        case 'repair':
+          return 'Reinstalling the dependencies with npm. This usually takes under a minute, longer on a slow connection.';
+        case 'update':
+          return 'This update changed the dependencies, so they are being reinstalled. This usually takes under a minute, longer on a slow connection.';
+        case 'rollback':
+          return 'Reinstalling the dependencies that go with the previous version. This usually takes under a minute.';
+        default:
+          return 'Installing the dependencies with npm (about 400 MB on disk). The first time can take a few minutes; afterwards this only runs when the dependencies change.';
+      }
+    case 'STARTING':
+      return reason === 'first-run' || reason === 'reset'
+        ? 'The first start after an install can take up to a minute while the engine prepares its browser bundle.'
+        : null;
     case 'UPDATING':
       return 'Keep OpenTac open. If anything fails, the previous version is restored automatically.';
     case 'ROLLING_BACK':
@@ -129,6 +176,50 @@ export function phaseNote(phase: Phase): string | null {
     default:
       return null;
   }
+}
+
+/** Lowercase, without trailing dots or an ellipsis: lets "Installing dependencies…" match its title. */
+function lineKey(text: string): string {
+  return text.toLowerCase().replace(/[\s.…]+$/u, '').trim();
+}
+
+/**
+ * One sub-line under the headline. The shell sends a message and a bar label that often repeat the
+ * headline ("Installing dependencies" three times); this keeps the first one that adds something.
+ */
+export function progressSubLine(title: string, message: string, label: string): string {
+  const t = lineKey(title);
+  for (const candidate of [message, label]) {
+    const c = lineKey(candidate);
+    if (c === '' || t.includes(c) || c.includes(t)) continue;
+    return candidate.trim();
+  }
+  return '';
+}
+
+/**
+ * The log lines printed since the phase began. `baseline` is the tail when the phase started; the
+ * tail is a sliding window, so lines up to and including the baseline's last few are old output.
+ */
+export function newLogLines(baseline: readonly string[], tail: readonly string[]): string[] {
+  if (baseline.length === 0 || tail.length === 0) return [...tail];
+  const k = Math.min(3, baseline.length);
+  const key = baseline.slice(-k);
+  for (let end = tail.length; end >= k; end -= 1) {
+    let same = true;
+    for (let n = 0; n < k; n += 1) {
+      if (tail[end - k + n] !== key[n]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return tail.slice(end);
+  }
+  // The window may have slid so far that only the end of the baseline is left at the start of the tail.
+  for (let m = k - 1; m >= 1; m -= 1) {
+    if (tail.slice(0, m).every((line, n) => line === baseline[baseline.length - m + n])) return tail.slice(m);
+  }
+  return [...tail];
 }
 
 const ACTION_LABELS: Readonly<Record<ActionName, string>> = {
@@ -185,15 +276,47 @@ export function formatDate(value: string | null | undefined): string {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/** "1 commit" / "12 commits". */
-export function formatCommitCount(n: number, truncated = false): string {
-  const base = n === 1 ? '1 commit' : `${n} commits`;
+/** 1,351 (always the same digits grouping, whatever the system locale). */
+export function formatCount(n: number): string {
+  return Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : '0';
+}
+
+/** "1 commit" / "12 commits"; when the list was cut: "showing the newest 200 of 812 commits". */
+export function formatCommitCount(n: number, truncated = false, shown?: number): string {
+  if (truncated && shown !== undefined && shown > 0 && shown < n) {
+    return `showing the newest ${formatCount(shown)} of ${formatCount(n)} commits`;
+  }
+  const base = n === 1 ? '1 commit' : `${formatCount(n)} commits`;
   return truncated ? `${base} (list shortened)` : base;
+}
+
+/**
+ * Git's "--shortstat" line as "1,351 files changed, +125,647 −23,826". Anything that is not that
+ * shape is returned trimmed and unchanged.
+ */
+export function formatDiffStat(raw: string): string {
+  const text = raw.trim();
+  const files = /(\d+) files? changed/.exec(text);
+  if (files === null) return text;
+  const ins = /(\d+) insertions?\(\+\)/.exec(text);
+  const del = /(\d+) deletions?\(-\)/.exec(text);
+  const n = Number(files[1]);
+  const parts = [`${formatCount(n)} ${n === 1 ? 'file' : 'files'} changed`];
+  if (ins !== null) parts.push(`+${formatCount(Number(ins[1]))}`);
+  if (del !== null) parts.push(`\u2212${formatCount(Number(del[1]))}`);
+  return parts.join(', ');
 }
 
 /** One-line summary above the commit list, e.g. "From v0.3.0 to stable-2026.11.01: 12 commits". */
 export function formatDisclosureSummary(d: Disclosure): string {
-  return `From ${d.fromLabel} to ${d.toLabel}: ${formatCommitCount(d.commitCount, d.truncated)}`;
+  if (isDowngrade(d)) {
+    const removed =
+      d.removedCommits === undefined
+        ? 'moves back to an older version'
+        : `removes ${formatCommitCount(d.removedCommits)}`;
+    return `From ${d.fromLabel} to ${d.toLabel}: ${removed}`;
+  }
+  return `From ${d.fromLabel} to ${d.toLabel}: ${formatCommitCount(d.commitCount, d.truncated, d.commits.length)}`;
 }
 
 /** Plain name of a channel for headings and summaries. */
@@ -208,7 +331,7 @@ export function channelName(channel: Channel): string {
   }
 }
 
-export const LOCKFILE_NOTE = 'Dependencies will be reinstalled (~1–3 min).';
+export const LOCKFILE_NOTE = 'Dependencies will be reinstalled (usually under a minute, longer on a slow connection).';
 export const UNTESTED_BANNER_UPSTREAM =
   'Untested: this is raw upstream code that OpenTac has not run through its checks. It may not start.';
 export const UNTESTED_BANNER_CANDIDATE =
@@ -292,9 +415,15 @@ export function disclosureBlockNote(d: Disclosure): string | null {
   return null;
 }
 
+/** True when the "update" only moves the engine back to an older version (nothing new to list). */
+export function isDowngrade(d: Disclosure): boolean {
+  return d.needsReset && d.commitCount === 0;
+}
+
 /** Panel heading for the disclosure. */
 export function disclosureHeading(d: Disclosure): string {
   if (d.blockedByShell) return 'Update OpenTac first';
+  if (isDowngrade(d)) return 'Move the engine back to an older version';
   return d.severity === 'security' ? 'A security update is available' : 'An engine update is available';
 }
 
@@ -355,9 +484,9 @@ export const PREFERENCE_TABS: ReadonlyArray<{ id: TabName; label: string }> = [
 
 /** Where each kind of setting lives, for the General tab. */
 export const SETTINGS_MAP: ReadonlyArray<{ tab: TabName; title: string; text: string }> = [
-  { tab: 'keys', title: 'API keys', text: "The engine's provider keys, saved in the engine's own .env file. OpenRouter and xAI keys for summaries are kept encrypted by OpenTac." },
-  { tab: 'engine', title: 'Engine settings', text: "Models, rate limits, data feeds and camera packs, written to the engine's .env file. Saving restarts the engine." },
-  { tab: 'app', title: 'App settings', text: "OpenTac's own behaviour: login item, crash restarts, update timing, logging, proxy and folders." },
+  { tab: 'keys', title: 'API keys', text: "The engine’s provider keys, saved in the engine’s own .env file. OpenRouter and xAI keys for summaries are kept encrypted by OpenTac." },
+  { tab: 'engine', title: 'Engine settings', text: "Models, rate limits, data feeds and camera packs, written to the engine’s .env file. Saving restarts the engine." },
+  { tab: 'app', title: 'App settings', text: "OpenTac’s own behaviour: login item, crash restarts, update timing, logging, proxy and folders." },
   { tab: 'channel', title: 'Updates', text: 'Which engine versions to follow and when to check for updates.' },
   { tab: 'ai', title: 'AI summaries', text: 'Which provider writes the short summary line in the heads-up display.' },
 ];
@@ -407,13 +536,44 @@ export function splitKeyRows(list: Pick<EngineKeysPublic, 'keys'>): { main: Engi
 }
 
 /** "3 of 10 keys are set." */
-export function keysSummary(list: Pick<EngineKeysPublic, 'setCount' | 'total'>): string {
-  return `${list.setCount} of ${list.total} keys are set.`;
+export function keysSummary(
+  list: Pick<EngineKeysPublic, 'setCount' | 'total'> & { keys?: ReadonlyArray<Pick<EngineKeyRow, 'id' | 'set' | 'managed'>> },
+  openAiPlaceholder = false,
+): string {
+  // The locked OpenAI row is "set" only by a placeholder while another summary provider is active.
+  const placeholders = openAiPlaceholder
+    ? (list.keys ?? []).filter((k) => k.id === 'openai' && k.set && k.managed === 'external').length
+    : 0;
+  const count = Math.max(0, list.setCount - placeholders);
+  return `${count} of ${list.total} keys set.`;
 }
 
-/** The accessible label of one value box of a key row. */
+/** Plain label for one value box of a key row: "Client ID", "Client secret", else "Key". */
+export function keyFieldLabel(row: Pick<EngineKeyRow, 'envVars'>, envVar: string): string {
+  if (row.envVars.length <= 1) return 'Key';
+  if (/_CLIENT_ID$/.test(envVar)) return 'Client ID';
+  if (/_CLIENT_SECRET$/.test(envVar)) return 'Client secret';
+  if (/_(API_)?KEY$/.test(envVar)) return 'Key';
+  if (/_TOKEN$/.test(envVar)) return 'Token';
+  if (/_SECRET$/.test(envVar)) return 'Secret';
+  return envVar;
+}
+
+/** The accessible label of one value box of a key row (the variable name goes in the tooltip). */
 export function keyInputLabel(row: Pick<EngineKeyRow, 'title' | 'envVars'>, envVar: string): string {
-  return row.envVars.length > 1 ? `${row.title} ${envVar}` : `${row.title} key (${envVar})`;
+  return row.envVars.length > 1 ? `${keyTitle(row.title)} ${keyFieldLabel(row, envVar).toLowerCase()}` : `${keyTitle(row.title)} key`;
+}
+
+export const KEY_PLACEHOLDER = 'Paste key';
+export const KEY_STORED_PLACEHOLDER = 'Saved. Type to replace it.';
+export const KEY_LOCKED_PLACEHOLDER = 'Managed by OpenTac while another summary provider is active';
+export const EXPOSED_LEGEND =
+  '“Visible in the browser” means the engine builds that key into the web page on purpose, so restrict it at the provider (for example to your own address).';
+
+/** Placeholder of a key box: locked rows explain themselves, stored keys say so, empty ones invite a paste. */
+export function keyPlaceholder(row: Pick<EngineKeyRow, 'set' | 'lock'>): string {
+  if (row.lock !== null) return KEY_LOCKED_PLACEHOLDER;
+  return row.set ? KEY_STORED_PLACEHOLDER : KEY_PLACEHOLDER;
 }
 
 const BRAND_WORDS: Readonly<Record<string, string>> = {
@@ -439,10 +599,15 @@ export function keyTitle(title: string): string {
 export function keyResultMessage(result: EngineKeySaveResult, what: 'saved' | 'removed'): string {
   if (result.ok) {
     return what === 'saved'
-      ? 'Key saved. The engine is restarting itself; the page reloads in a moment.'
-      : 'Key removed. The engine is restarting itself; the page reloads in a moment.';
+      ? 'Saved. The engine is restarting itself; the page reloads in a moment.'
+      : 'Removed. The engine is restarting itself; the page reloads in a moment.';
   }
   return result.message ?? 'The key was not saved.';
+}
+
+/** The message that replaces the "restarting" one once the key list sees the engine again. */
+export function keyRestartedMessage(what: 'saved' | 'removed'): string {
+  return what === 'saved' ? 'Saved. The engine has restarted.' : 'Removed. The engine has restarted.';
 }
 
 /** Env var names in the static catalogue, for the "no list yet" fallback and tests. */
@@ -480,10 +645,26 @@ export interface SettingFieldModel {
   min: number | null;
   max: number | null;
   step: string | null;
+  /** When the warning applies; undefined means always. */
+  warnWhen: 'zero' | 'on' | undefined;
   /** The "turn this off" checkbox of fields where an empty value is meaningful. */
   canDisable: boolean;
   disabled: boolean;
   secret: boolean;
+}
+
+/**
+ * Whether a field's caution should be showing for what is typed or chosen right now. A caution
+ * with no condition always shows; '0 turns the guard off' only once the value is 0.
+ */
+export function warningActive(
+  model: Pick<SettingFieldModel, 'warning' | 'warnWhen'>,
+  value: string,
+): boolean {
+  if (model.warning === null) return false;
+  if (model.warnWhen === 'zero') return value.trim() !== '' && Number(value) === 0;
+  if (model.warnWhen === 'on') return value === 'on';
+  return true;
 }
 
 function defaultLabel(def: SettingDef): string {
@@ -503,6 +684,7 @@ export function settingFieldModel(
     label: def.label,
     description: def.description,
     warning: def.warning ?? null,
+    warnWhen: def.warnWhen,
     isSet,
     min: def.min ?? null,
     max: def.max ?? null,
@@ -542,7 +724,7 @@ export function settingFieldModel(
         ...base,
         kind: 'password',
         value: '',
-        placeholder: isSet ? 'Saved. Type to replace it.' : 'Not set',
+        placeholder: isSet ? KEY_STORED_PLACEHOLDER : KEY_PLACEHOLDER,
         options: [],
       };
     case 'number':
@@ -562,6 +744,11 @@ export function settingFieldModel(
         options: [],
       };
   }
+}
+
+/** "Save camera settings": from the group's own sentence-case label, not its lowercased title. */
+export function groupSaveLabel(group: Pick<SettingGroup, 'title' | 'saveLabel'>): string {
+  return `Save ${group.saveLabel ?? group.title.toLowerCase()} settings`;
 }
 
 /** Models for the plain (non-region) fields of a group. */
@@ -664,7 +851,7 @@ export function buildSettingsPatch(
     if (input === undefined) continue;
     const isSet = current.set[def.key] === true;
     if (def.type === 'secret') {
-      if (input.value !== '') patch[def.key] = input.value;
+      if (input.value.trim() !== '') patch[def.key] = input.value.trim();
     } else if (def.type === 'boolean') {
       const typed = input.value;
       if (typed === '') {
@@ -714,10 +901,17 @@ export function buildSettingsPatch(
 }
 
 /** The sentence shown under a group's Save button after a save attempt. */
-export function settingsResultMessage(result: SaveEngineSettingsResult): string {
+export function settingsResultMessage(
+  result: SaveEngineSettingsResult,
+  labelFor: (key: string) => string = (k) => k,
+): string {
   if (result.ok) return result.message ?? (result.restarting ? ENGINE_SETTINGS_RESTARTING : 'Saved.');
-  const first = Object.entries(result.invalid)[0];
-  if (first !== undefined) return `${first[1]} (${first[0]})`;
+  const entries = Object.entries(result.invalid);
+  const first = entries[0];
+  if (first !== undefined) {
+    const more = entries.length > 1 ? ` (and ${entries.length - 1} more below)` : '';
+    return `${labelFor(first[0])}: ${first[1]}${more}`;
+  }
   return result.message ?? 'The settings were not saved.';
 }
 
@@ -744,6 +938,24 @@ export const PROXY_NOTE =
   'Used for git and npm right away, and for the engine the next time it starts. Addresses with a user name or password are not accepted.';
 export const ENGINE_REMOTE_NOTE = 'Only change this to point at your own mirror; the default is the OpenTac mirror.';
 
+/** The proxy validator's wording, in plain terms (the validator itself lives in shared/). */
+export function plainProxyReason(reason: string): string {
+  return reason.replace(
+    /,? because OpenTac settings are not encrypted\.?$/,
+    '. Enter only the host and port, for example http://proxy.example.com:8080.',
+  );
+}
+
+/** Login items only work in the installed app; an unpackaged run would register the bare Electron binary. */
+export function launchAtLoginAvailable(versions: Pick<Versions, 'packaged'> | null): boolean {
+  return versions === null || versions.packaged !== false;
+}
+
+export const LOGIN_UNAVAILABLE_NOTE = 'Only available in the installed app.';
+
+/** How long a transient status line stays: confirmations briefly, errors a little longer. */
+export const STATUS_SECONDS = { ok: 5, error: 12 } as const;
+
 /** The "Reset engine files" action only does something while the app shows an error. */
 export function resetEngineFilesEnabled(phase: Phase): boolean {
   return phase === 'ERROR';
@@ -752,4 +964,90 @@ export function resetEngineFilesEnabled(phase: Phase): boolean {
 /** The Reinstall action works from a running, crashed or errored engine. */
 export function reinstallEnabled(phase: Phase): boolean {
   return phase === 'RUNNING' || phase === 'CRASHED' || phase === 'ERROR';
+}
+
+// ---------------------------------------------------------------------------
+// Progress extras
+// ---------------------------------------------------------------------------
+
+/**
+ * Hides npm's advisory lines from the setup window's log tail (they stay in main.log): the
+ * deprecation notices and the "install scripts not yet covered by allowScripts" note read like
+ * unresolved problems to someone who has no npm. Real errors are never filtered.
+ */
+export function visibleLogLines(lines: readonly string[]): string[] {
+  return lines.filter(
+    (l) => !/^\s*npm (warn|notice) (deprecated|install-scripts)\b/i.test(l) && !/npm install-scripts (ls|approve)\b/.test(l),
+  );
+}
+
+export interface AiTestSummary {
+  /** The summary sentence when the reply was the engine's JSON, else the reply as plain text. */
+  summary: string;
+  /** The raw reply, for the Details disclosure. */
+  raw: string;
+}
+
+/** The AI test reply as a sentence (the engine answers {"summary":"…","feedState":null}); raw text is kept for Details. */
+export function parseAiTestReply(text: string): AiTestSummary {
+  const raw = text.trim();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const summary = (parsed as Record<string, unknown>)['summary'];
+      if (typeof summary === 'string' && summary.trim() !== '') {
+        return { summary: summary.trim(), raw: JSON.stringify(parsed, null, 2) };
+      }
+    }
+  } catch {
+    // Not JSON: show it as it is.
+  }
+  return { summary: raw, raw };
+}
+
+/** What the About panel says about the graphics the 3D map is using, from WebGL's renderer string. */
+export function gpuSummary(renderer: string | null): { ok: boolean; text: string } {
+  if (renderer === null || renderer === '') {
+    return { ok: false, text: 'Could not read the graphics status. Open View, Developer, GPU status to check it.' };
+  }
+  if (/swiftshader|llvmpipe|software|basic render/i.test(renderer)) {
+    return {
+      ok: false,
+      text: `Software rendering: ${renderer}. The 3D map will be slow. Open View, Developer, GPU status to see why hardware graphics is off.`,
+    };
+  }
+  return { ok: true, text: `Hardware graphics in use: ${renderer}` };
+}
+
+/** Plain titles and wording for the shell's error panels (the main process still sends the original text). */
+export function plainErrorTitle(title: string): string {
+  return title === 'A required piece is missing' ? 'Some of OpenTac’s files are missing' : title;
+}
+
+export function plainErrorMessage(message: string): string {
+  return message.replace(/ \(its Vite dev server is missing\)/, '');
+}
+
+/**
+ * The detail box of an error panel: the shell joins log lines with " | "; show one per line, and
+ * show nothing when the detail is only a file path (it says what, not why).
+ */
+export function plainErrorDetail(detail: string | null): string {
+  if (detail === null) return '';
+  const text = detail.trim();
+  if (/^(\/|~\/|[A-Za-z]:\\)[^\n]*$/.test(text) && !/[:.!?]\s/.test(text)) return '';
+  return text.split(' | ').join('\n');
+}
+
+/** "Working for 1:05" from a duration in milliseconds. */
+export function elapsedLabel(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = String(total % 60).padStart(2, '0');
+  return `Working for ${m}:${sec}. This is normal; it has not stopped.`;
+}
+
+/** Phases whose duration is unknown, so an elapsed-time line replaces a percentage. */
+export function showsElapsed(phase: Phase): boolean {
+  return phase === 'CLONING' || phase === 'INSTALLING' || phase === 'STARTING' || phase === 'UPDATING' || phase === 'RESTARTING' || phase === 'ROLLING_BACK' || phase === 'CHECKING';
 }

@@ -239,7 +239,10 @@ function runChild(opts: RunOptions): Promise<RunOutcome> {
     }, opts.timeoutMs);
     const onAbort = (): void => {
       outcome.aborted = true;
-      terminate();
+      // An abort means the app is quitting: a grace timer would die with the process and leave npm
+      // running as an orphan, so kill the whole group now. The install is restartable
+      // (installedLockHash is cleared when it starts, so the next launch repairs it).
+      killTree(child.pid, 'SIGKILL');
     };
     opts.signal?.addEventListener('abort', onAbort, { once: true });
 

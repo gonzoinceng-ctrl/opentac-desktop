@@ -1,0 +1,16 @@
+---
+title: Message not sent
+description: The OpenTac contact form could not send your message.
+path: /contact/error/
+noindex: true
+---
+{{> head}}
+{{> header}}
+<main id="main" class="page">
+  <div class="wrap prose">
+    <h1>Your message was not sent</h1>
+    <p id="error-message" class="form-status err" role="alert">{{{error_slot}}}</p>
+    <p><a href="/contact/">Back to the contact form</a>. For problems with the Mac app, the <a href="{{links.appIssues}}" rel="noopener">issue tracker</a> works too.</p>
+  </div>
+</main>
+{{> footer}}

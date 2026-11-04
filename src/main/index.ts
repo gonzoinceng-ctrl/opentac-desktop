@@ -5,7 +5,8 @@
  * switches, the app name and the single-instance lock. Everything else happens in boot().
  */
 import { readFile } from 'node:fs/promises';
-import { arch as processArch, platform } from 'node:os';
+import { existsSync } from 'node:fs';
+import { arch as processArch, homedir, platform } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 
 import {
@@ -20,6 +21,7 @@ import {
 
 import type { ShellState, WindowBounds } from '../shared/types.js';
 import { proxyEnvFor } from '../shared/appSettings.js';
+import { redactHomeDir } from '../shared/redact.js';
 import { createAiGateway } from './aiGateway.js';
 import { createCheckoutManager } from './checkout.js';
 import { createController, resolveDevOverrides } from './controller.js';
@@ -39,7 +41,7 @@ import { createRingBuffer } from './ringBuffer.js';
 import { createSecrets } from './secrets.js';
 import { createServerManager } from './server.js';
 import { createShellUpdater } from './shellUpdate.js';
-import { loadState, readLogLevelSetting, saveState } from './state.js';
+import { loadStateReport, readLogLevelSetting, saveState } from './state.js';
 import { createShellUi } from './windows.js';
 
 // ---------------------------------------------------------------------------
@@ -224,7 +226,8 @@ async function boot(): Promise<void> {
   // State. The controller is the single writer of everything except two fields that only the
   // windows and permission layers learn about: the main window bounds and remembered USB devices.
   // Those live here and are overlaid onto every save, so neither side can overwrite the other.
-  const initialState: ShellState = await loadState(paths.stateFile, paths.stateBackupFile, log);
+  const stateReport = await loadStateReport(paths.stateFile, paths.stateBackupFile, log);
+  const initialState: ShellState = stateReport.state;
   let windowBounds: WindowBounds | null = initialState.mainWindowBounds;
   // Entries keep productName in memory (state.ts cannot persist it yet; see DECISIONS).
   let usbDevices: RememberedUsbDevice[] = initialState.usbDevices;
@@ -243,6 +246,13 @@ async function boot(): Promise<void> {
   // Proxy from App settings, read per call so a change applies to the next git or npm command.
   const proxyEnv = (): Record<string, string> => proxyEnvFor((controllerRef?.state() ?? initialState).app.proxy);
   const git = createGitRunner({ gitDir: paths.gitDir, log: log.scope('git'), proxyEnv });
+  // Once per launch: which git binary dugite will run (PKG-5), home directory shown as ~.
+  {
+    const gitBin = join(paths.gitDir, 'bin', 'git');
+    log.info(
+      `git: ${redactHomeDir(gitBin, homedir())} (${existsSync(gitBin) ? 'present' : 'MISSING'}; dugite LOCAL_GIT_DIRECTORY)`,
+    );
+  }
   const checkout = createCheckoutManager({ checkoutDir: paths.checkoutDir, git, log: log.scope('checkout') });
   const install = createInstallManager({ paths, log: log.scope('install'), proxyEnv });
   const ring = createRingBuffer();
@@ -274,7 +284,10 @@ async function boot(): Promise<void> {
     },
     log,
   });
-  if (!(await secrets.available())) log.warn('secure key storage is not available; provider keys cannot be saved');
+  // Deliberately no secrets.available() here: on a Mac whose login keychain holds an 'OpenTac Safe
+  // Storage' item made by a differently signed build, the first safeStorage call raises a password
+  // prompt. Boot must not wait on it (DECISIONS 2026-11-04); the controller probes it in the
+  // background, with a timeout, after the setup window is up.
 
   // Windows.
   const ui = createShellUi({
@@ -329,6 +342,11 @@ async function boot(): Promise<void> {
     ui,
     shellUpdater,
     initialState,
+    ...(stateReport.reset
+      ? {
+          startupNotice: `OpenTac's settings file was damaged and was reset${stateReport.salvaged.length > 0 ? ` (kept: ${stateReport.salvaged.join(', ')})` : ''}. A copy was saved as state.json.bak in the data folder. Check Preferences if something looks different.`,
+        }
+      : {}),
     saveState: persistState,
     secrets,
     checkout,

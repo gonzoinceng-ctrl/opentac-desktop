@@ -7,7 +7,11 @@ import {
   matchUsbDevice,
   originOf,
   sameUsbIdentity,
+  shouldAutoReloadAfterRenderError,
+  isAllowedSender,
   toRememberedUsb,
+  chooseWorkArea,
+  ollamaHostWarning,
   validateBounds,
 } from '../../src/main/policy.js';
 
@@ -201,6 +205,20 @@ describe('validateBounds', () => {
   it('keeps the title bar below the top of the work area', () => {
     expect(validateBounds({ x: 10, y: -300, width: 1200, height: 800 }, work, def, min)).toMatchObject({ x: 10, y: 25 });
   });
+  it('pulls a window that was clamped in size back inside the work area (DU-08)', () => {
+    expect(validateBounds({ x: 100, y: 100, width: 9000, height: 9000 }, work, def, min)).toEqual({
+      x: 0,
+      y: 25,
+      width: 1920,
+      height: 1055,
+    });
+    expect(validateBounds({ x: 1500, y: 700, width: 1200, height: 800 }, work, def, min)).toEqual({
+      x: 720,
+      y: 280,
+      width: 1200,
+      height: 800,
+    });
+  });
   it('ignores non-finite numbers', () => {
     expect(validateBounds({ x: Number.NaN, y: 1, width: Number.NaN, height: 5 }, work, def, min)).toEqual({
       width: 1440,
@@ -237,5 +255,62 @@ describe('shell URLs', () => {
     expect(src).not.toMatch(/\bOWNER\b/);
     expect(src).toContain('https://github.com/gonzoinceng-ctrl/opentac-desktop/issues');
     expect(src).not.toContain('gonzoinceng-ctrl/opentac/');
+  });
+});
+
+describe('shouldAutoReloadAfterRenderError', () => {
+  const now = 1_000_000_000;
+  const min = 60_000;
+  it('allows the first three reports in ten minutes', () => {
+    expect(shouldAutoReloadAfterRenderError([], now)).toBe(true);
+    expect(shouldAutoReloadAfterRenderError([now - min], now)).toBe(true);
+    expect(shouldAutoReloadAfterRenderError([now - 2 * min, now - min], now)).toBe(true);
+  });
+  it('stops after three within ten minutes', () => {
+    expect(shouldAutoReloadAfterRenderError([now - 3 * min, now - 2 * min, now - min], now)).toBe(false);
+  });
+  it('forgets reports older than ten minutes', () => {
+    expect(shouldAutoReloadAfterRenderError([now - 11 * min, now - 12 * min, now - 10 * min - 1, now - min], now)).toBe(true);
+  });
+  it('ignores junk timestamps', () => {
+    expect(shouldAutoReloadAfterRenderError([Number.NaN, now + 5 * min, now - min], now)).toBe(true);
+  });
+  it('only the engine origin may send the channel', () => {
+    expect(isAllowedSender(`${ENGINE}/`, 'opentac:renderError', ENGINE)).toBe(true);
+    expect(isAllowedSender('app://setup/index.html', 'opentac:renderError', ENGINE)).toBe(false);
+    expect(isAllowedSender('https://example.com/', 'opentac:renderError', ENGINE)).toBe(false);
+    expect(isAllowedSender(`${ENGINE}/`, 'opentac:renderError', null)).toBe(false);
+  });
+});
+
+describe('chooseWorkArea', () => {
+  const main = { x: 0, y: 25, width: 1920, height: 1055 };
+  const right = { x: 1920, y: 0, width: 1440, height: 900 };
+  it('picks the display the window overlaps most', () => {
+    expect(chooseWorkArea({ x: 2000, y: 50, width: 1000, height: 700 }, [main, right], main)).toBe(right);
+    expect(chooseWorkArea({ x: 100, y: 100, width: 1000, height: 700 }, [main, right], main)).toBe(main);
+  });
+  it('falls back to the primary work area when the saved screen is gone', () => {
+    expect(chooseWorkArea({ x: 5000, y: 100, width: 1000, height: 700 }, [main], main)).toBe(main);
+    expect(chooseWorkArea({ x: 3000, y: 100, width: 1000, height: 700 }, [main], main)).toBe(main);
+    expect(chooseWorkArea(null, [main, right], main)).toBe(main);
+  });
+});
+
+describe('ollamaHostWarning (SEC-06)', () => {
+  it('is quiet for this Mac and for the default', () => {
+    expect(ollamaHostWarning(null)).toBeNull();
+    expect(ollamaHostWarning('')).toBeNull();
+    expect(ollamaHostWarning('http://127.0.0.1:11434')).toBeNull();
+    expect(ollamaHostWarning('http://localhost:11434/')).toBeNull();
+    expect(ollamaHostWarning('http://[::1]:11434')).toBeNull();
+  });
+  it('warns about plain http on a LAN address and about public hosts', () => {
+    expect(ollamaHostWarning('http://192.168.1.20:11434')).toContain('plain http');
+    expect(ollamaHostWarning('http://172.20.0.5:11434')).toContain('plain http');
+    expect(ollamaHostWarning('https://192.168.1.20')).toBeNull();
+    expect(ollamaHostWarning('http://ollama.example.com')).toContain('unencrypted');
+    expect(ollamaHostWarning('https://ollama.example.com')).toContain('neither this Mac');
+    expect(ollamaHostWarning('http://172.40.0.5')).toContain('neither this Mac');
   });
 });

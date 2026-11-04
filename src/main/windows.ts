@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 
-import { app, BrowserWindow, dialog, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 import type { WebContents } from 'electron';
 
 import { IPC, isExternalUrl } from '../shared/ipc.js';
@@ -8,7 +8,7 @@ import type { Phase, PublicState, UsbDevicePublic } from '../shared/ipc.js';
 import type { ShellState, WindowBounds } from '../shared/types.js';
 import type { ShellUi } from './contracts.js';
 import type { Logger } from './logger.js';
-import { decideNavigation, originOf, SETUP_ORIGIN, validateBounds } from './policy.js';
+import { decideNavigation, isAllowedSender, originOf, SETUP_ORIGIN, shouldAutoReloadAfterRenderError, chooseWorkArea, validateBounds } from './policy.js';
 
 /** Options for {@link createShellUi}. */
 export interface ShellUiOptions {
@@ -48,7 +48,8 @@ export type ShellUiFull = ShellUi & {
 const SETUP_SIZE = { width: 760, height: 560 };
 const SETUP_MIN = { width: 600, height: 440 };
 const MAIN_SIZE = { width: 1440, height: 900 };
-const MAIN_MIN = { width: 1024, height: 640 };
+// Below about 1180x720 the engine HUD's toolbar overlaps its title and the right panels overlap the readout (DU-08).
+const MAIN_MIN = { width: 1180, height: 720 };
 const PICKER_SIZE = { width: 460, height: 420 };
 const BOUNDS_DEBOUNCE_MS = 500;
 const RETRY_INTERVAL_MS = 500;
@@ -71,7 +72,7 @@ function safeOpenExternal(url: string, log: Logger): void {
     return;
   }
   // Test hook (e2e): log instead of handing the URL to the system browser.
-  if (process.env['OPENTAC_E2E_NO_EXTERNAL'] === '1') {
+  if (!app.isPackaged && process.env['OPENTAC_E2E_NO_EXTERNAL'] === '1') {
     log.info(`E2E: openExternal suppressed for ${url}`);
     return;
   }
@@ -137,6 +138,53 @@ export function createShellUi(opts: ShellUiOptions): ShellUiFull {
     quitting = true;
   });
 
+  // Cesium's render-error overlay in the engine page (reported by dist/preload/main.cjs): the globe is
+  // dead until the page reloads, so reload it, at most three times in ten minutes.
+  const renderErrorTimes: number[] = [];
+  let renderErrorTotal = 0;
+  let renderPromptOpen = false;
+  const onRenderError = (event: Electron.IpcMainEvent, text: unknown): void => {
+    const win = mainWin;
+    if (win === null || win.isDestroyed() || event.sender !== win.webContents) return;
+    if (!isAllowedSender(event.senderFrame?.url ?? null, IPC.renderError, engineOrigin)) return;
+    const now = Date.now();
+    renderErrorTotal += 1;
+    const detail = typeof text === 'string' ? text.slice(0, 500).replace(/\s+/g, ' ') : '';
+    const reload = shouldAutoReloadAfterRenderError(renderErrorTimes, now);
+    renderErrorTimes.push(now);
+    while (renderErrorTimes.length > 20) renderErrorTimes.shift();
+    log.warn(`globe render error #${renderErrorTotal} (${reload ? 'reloading in 1.5 s' : 'reload budget spent, leaving the page'}): ${detail}`);
+    if (!reload) {
+      // The automatic reloads are spent and the globe is still dead: tell the user, once at a time (FR-5).
+      if (!renderPromptOpen) {
+        renderPromptOpen = true;
+        void showBox({
+          type: 'warning',
+          title: 'The globe stopped drawing',
+          message: 'The globe stopped drawing and reloading did not fix it.',
+          detail: 'This is a known intermittent problem in the map library. Reloading the page usually brings it back. If it keeps happening, restart the server from the Engine menu.',
+          buttons: ['Reload Page', 'Not Now'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        })
+          .then((res) => {
+            if (res.response === 0 && !win.isDestroyed()) win.webContents.reload();
+          })
+          .catch((err: unknown) => log.warn(`render error prompt failed: ${String(err)}`))
+          .finally(() => {
+            renderPromptOpen = false;
+          });
+      }
+      return;
+    }
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.webContents.reload();
+    }, 1500);
+  };
+  ipcMain.on(IPC.renderError, onRenderError);
+  app.on('before-quit', () => ipcMain.removeListener(IPC.renderError, onRenderError));
+
   // ----- setup window -----
 
   function createSetup(): BrowserWindow {
@@ -192,12 +240,13 @@ export function createShellUi(opts: ShellUiOptions): ShellUiFull {
 
   function boundsForMain(): WindowBounds {
     const saved = opts.state().mainWindowBounds;
-    const probe =
-      saved !== null && saved.x !== undefined && saved.y !== undefined
-        ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
-        : undefined;
-    const display = probe !== undefined ? screen.getDisplayMatching(probe) : screen.getPrimaryDisplay();
-    return validateBounds(saved, display.workArea, MAIN_SIZE, MAIN_MIN);
+    // Restore the position only if it still intersects a connected display (DU-08).
+    const workArea = chooseWorkArea(
+      saved,
+      screen.getAllDisplays().map((d) => d.workArea),
+      screen.getPrimaryDisplay().workArea,
+    );
+    return validateBounds(saved, workArea, MAIN_SIZE, MAIN_MIN);
   }
 
   function createMain(url: string): BrowserWindow {

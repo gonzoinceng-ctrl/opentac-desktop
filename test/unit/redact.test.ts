@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTED, REDACTION_PATTERNS, redact } from '../../src/shared/redact.js';
+import { REDACTED, REDACTION_PATTERNS, redact, redactHomeDir } from '../../src/shared/redact.js';
 
 const JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r';
@@ -152,5 +152,46 @@ describe('secret key-name rule is suffix-based', () => {
     expect(redact('OPENAI_API_KEY=abc123def GITHUB_TOKEN=xyz ACCESS_TOKEN=q client_secret=s')).toBe(
       'OPENAI_API_KEY=[REDACTED] GITHUB_TOKEN=[REDACTED] ACCESS_TOKEN=[REDACTED] client_secret=[REDACTED]',
     );
+  });
+});
+
+describe('redact: JSON, header and path forms (SEC-03)', () => {
+  const HEX40 = 'a3f5c9d1e7b2480f6a1c3d5e7f9b1a2c3d4e5f60';
+  it.each([
+    ['JSON apiKey', `{"APIKey":"${HEX40}"}`, '{"APIKey":"[REDACTED]"}'],
+    ['JSON access_token', '{"access_token":"abcd1234efgh"}', '{"access_token":"[REDACTED]"}'],
+    ['x-api-key header', `x-api-key: ${HEX40}`, 'x-api-key: [REDACTED]'],
+    ['gateway token header', `x-opentac-gateway-token: ${'ab'.repeat(32)}`, 'x-opentac-gateway-token: [REDACTED]'],
+    ['bare Authorization', `Authorization: ${HEX40}`, 'Authorization: [REDACTED]'],
+    ['client_secret', 'client_secret: s3cr3t-value', 'client_secret: [REDACTED]'],
+    ['password colon', 'password: hunter22', 'password: [REDACTED]'],
+    ['FIRMS key in a path', 'GET /api/area/csv/0123456789abcdef0123456789abcdef/VIIRS_SNPP_NRT/world/1', 'GET /api/area/csv/[REDACTED]/VIIRS_SNPP_NRT/world/1'],
+    ['Mapillary token', 'access_token=MLY|123456789|0123456789abcdef0123456789abcdef', 'access_token=[REDACTED]'],
+    ['bare Mapillary token', 'using MLY|123456789|0123456789abcdef0123456789abcdef now', 'using [REDACTED] now'],
+  ])('redacts %s', (_n, input, expected) => {
+    expect(redact(input)).toBe(expected);
+  });
+
+  it('keeps the Authorization scheme', () => {
+    expect(redact('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: Basic [REDACTED]');
+  });
+
+  it('does not touch commit SHAs, short hex or ordinary words', () => {
+    const sha = '48146f8e5befe7ea5e0c886149f4a6de825f6ebb';
+    expect(redact(`checked out ${sha} (7322ce5)`)).toBe(`checked out ${sha} (7322ce5)`);
+    expect(redact('GET /api/area/csv/world/1 200')).toBe('GET /api/area/csv/world/1 200');
+    expect(redact('max_tokens: 200, keyboard layout, tokenizer ready')).toBe(
+      'max_tokens: 200, keyboard layout, tokenizer ready',
+    );
+  });
+});
+
+describe('redactHomeDir', () => {
+  it('replaces the home directory with ~ at path boundaries only', () => {
+    expect(redactHomeDir('/Users/ann/Library/Application Support/OpenTac/logs', '/Users/ann')).toBe(
+      '~/Library/Application Support/OpenTac/logs',
+    );
+    expect(redactHomeDir('at /Users/ann and /Users/annabel/x', '/Users/ann')).toBe('at ~ and /Users/annabel/x');
+    expect(redactHomeDir('keep /Users/bob', '')).toBe('keep /Users/bob');
   });
 });

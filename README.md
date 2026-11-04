@@ -45,7 +45,7 @@ There are **two independent update mechanisms**, kept separate in the code and i
 engine mirror, [`gonzoinceng-ctrl/opentac-engine`](https://github.com/gonzoinceng-ctrl/opentac-engine).
 The mirror carries zero engine commits of its own: every commit on it exists in upstream's history.
 It only advances after automated contract checks, upstream's own tests, an Electron smoke test and a
-3-day canary period. Before applying anything OpenTac shows a **disclosure**: the remote, the
+3-day canary period (a 72-hour trial period where a new engine version is run and checked before it is promoted to everyone). Before applying anything OpenTac shows a **disclosure**: the remote, the
 commits (newest first), the diffstat, whether dependencies change, and for `stable` the gate run
 and canary length. Nothing is applied until you click. Updates are fast-forward only; if the
 update fails to start, OpenTac rolls the checkout back to the previous commit. Checks run shortly
@@ -90,7 +90,7 @@ unlocks. Keys survive engine updates.
 
 ## AI providers and voice
 
-HUD summaries can use **OpenAI** (default, the engine's own path), **Ollama** (local),
+HUD summaries can use **OpenAI** (the default for new installs: the engine's own path, with its own editable key row), or, if you opt in, **Ollama** (local),
 **OpenRouter** or **xAI**, chosen in Preferences › AI summaries. For the non-OpenAI options OpenTac runs a
 small gateway bound to `127.0.0.1` and reroutes only the engine's single HUD-summary request; the
 OpenRouter and xAI keys are stored encrypted (`secrets.json`, protected by a Keychain key) and never
@@ -179,7 +179,7 @@ your own mirror or fork, quit OpenTac, set `remoteUrl` (and `channel` to match a
 then relaunch; or try one without saving it using `OPENTAC_ENGINE_REMOTE` (and `OPENTAC_ENGINE_REF`).
 The remote must carry the refs the channel names (`stable`, `candidate`, `upstream-main`) or you
 can pin a ref with `OPENTAC_ENGINE_REF`. If the new remote does not share history with the current
-checkout, use *Reset engine files* in the error panel (or *Engine › Reset to Upstream…*, which only
+checkout, use *Reset engine files* in the error panel (or *Engine › Download Engine Again…*, which only
 acts while the app is in the ERROR state). It deletes the checkout, re-clones and reinstalls, and keeps
 only your `.env`; `.gev-cache` and `node_modules` are not kept. To move an existing checkout to a
 different commit on the same remote, use *Reset and update* in the update disclosure, which keeps

@@ -35,8 +35,8 @@ channel (Preferences › Engine channel) or use *Engine › Open in Browser*.
   `remoteUrl` in `state.json`, check that URL.
 
 ### Couldn't reach GitHub (`NETWORK`, during an update)
-- **Cause:** the update check or fetch could not reach the mirror. The installed version keeps working.
-- **Fix:** Retry later. Launch-time checks fail quietly; only *Check for Engine Updates…* shows this.
+- **Cause:** the update check or fetch could not reach the mirror. The installed version keeps working. An unreachable remote counts as offline after about 30 seconds.
+- **Fix:** Retry later. Launch-time checks fail quietly; only *Check for Engine Updates…* shows this (a "Contacting GitHub…" panel appears after 1.5 seconds; *Dismiss* hides the window).
 
 ### Couldn't download the dependencies (`NETWORK`, during `npm ci`)
 - **Cause:** the npm registry could not be reached. OpenTac already retried once.
@@ -61,8 +61,8 @@ channel (Preferences › Engine channel) or use *Engine › Open in Browser*.
 - **Fix:** use the offered re-download (*Reset engine files*). It deletes the checkout and clones again; your `.env` is kept (restored from `env.backup`), `.gev-cache` and `node_modules` are not.
 
 ### The downloaded engine folder is damaged (`GIT_FAILED`, missing or not a repository)
-- **Cause:** `C` or `C/.git` was deleted or corrupted.
-- **Fix:** use the offered re-download. Saved API keys in `C/.env` are kept. If you deleted the whole
+- **Cause:** `C` or `C/.git` was deleted or corrupted (a checkout folder without `.git` is reported this way, not as a failed download).
+- **Fix:** use the offered *Reset engine files* button (download again; the menu route is *Engine › Download Engine Again…*, which only works while this error is showing). Saved API keys in `C/.env` are kept. If you deleted the whole
   `C`, the keys are gone; re-enter them in POWER UP.
 
 ### The expected version was not found / A download step failed / The update couldn't be applied (`GIT_FAILED`)
@@ -100,13 +100,13 @@ See "Port in use" below.
 - **Cause:** the engine process exited before it was ready, or crashed. The panel shows the last lines.
   Typical causes: an engine release that needs a newer app, a corrupt dependency tree, a port conflict,
   a bad `.env` line, or a dependency that cannot load.
-- **Fix:** Restart, then Reinstall, then read the last output in the CRASHED panel and the launcher lines in `main.log`. After a crash OpenTac restarts the server
-  once automatically; a second crash within 60 seconds waits for you (crash-loop guard). If this began
+- **Fix:** Restart, then Reinstall, then read the last output in the CRASHED panel (it names the exit reason, a signal or an exit code) and the launcher lines in `main.log`. After a crash OpenTac restarts the server
+  once automatically without showing the setup window, then shows a notice that it did so; a second crash within 60 seconds waits for you (crash-loop guard). If this began
   right after an engine update, OpenTac rolls back automatically; if the rollback also failed you will
   see "Couldn't go back to the previous version" with Retry, Reinstall and Show Logs.
 
 ### The summary provider isn't working
-- **Cause:** the local AI gateway reported a problem: Ollama not running or the model name wrong, a
+- **Cause:** you chose Ollama, OpenRouter or xAI (OpenAI is the default for new installs and needs no gateway), and the local AI gateway reported a problem: Ollama not running or the model name wrong, a
   missing or wrong OpenRouter/xAI key, or the provider answering with empty text (thinking models
   can spend the whole token budget on reasoning).
 - **Fix:** Preferences › AI › Test shows the reply, latency and finish reason. Start Ollama, pick an
@@ -127,7 +127,7 @@ See "Port in use" below.
 ### Provider Settings says a key is "external"
 - **What you see:** in the engine's POWER UP / Provider Settings panel the OpenAI key row is locked and
   reads as set from the environment; saving it fails with a 409.
-- **Cause:** OpenTac has a summary provider other than OpenAI selected (Ollama, OpenRouter or xAI). The
+- **Cause:** you chose a summary provider other than OpenAI (Ollama, OpenRouter or xAI; these are opt-in, OpenAI is the default for new installs). The
   engine only calls its OpenAI summary code when `OPENAI_API_KEY` is non-empty, so OpenTac passes a
   **placeholder** value in the engine's process environment (only if `C/.env` has no OpenAI key of its
   own). Upstream treats any key present in the environment at boot as "external" and read-only. The
@@ -215,10 +215,26 @@ The new engine release needs a newer app than the one installed. Use *OpenTac �
 Updates…*, install it, then check for engine updates again. The engine update is never applied until
 then.
 
-### Engine › Reset to Upstream… does nothing
-The menu item only acts while the app is in the ERROR state (the controller returns immediately in any
-other phase). From a running globe, use the update disclosure's *Reset and update* instead; from an
-error panel use *Reset engine files*.
+### Engine › Download Engine Again… only shows a message
+The menu item only acts while the app is in the ERROR state; in any other phase it explains this and
+deletes nothing. From a running globe, use the update disclosure's *Reset and update* or *Engine ›
+Reinstall Dependencies…* instead; from an error panel use *Reset engine files*, which asks once before
+deleting the checkout (your `.env` is kept).
+
+### The globe froze or went blank ("Rendering has stopped", "cartesian has a NaN component")
+- **Cause:** an intermittent halt inside the map library (Cesium) that upstream has not fixed. The globe stays dead until the page reloads.
+- **What OpenTac does:** it watches for Cesium's error overlay and reloads the page within about 1.5 seconds, up to three times in ten minutes. If the globe is still dead after that, a dialog "The globe stopped drawing" offers *Reload Page*.
+- **Fix:** choose *Reload Page*, or *Engine › Reload Page* / *Restart Server*. The log has `globe render error` lines. If it keeps happening, report it upstream.
+
+### A damaged settings file (`state.json`)
+- **What you see:** at startup a notice says OpenTac's settings file was damaged and was reset, and lists what was kept.
+- **What happens:** the bad file is copied to `D/state.json.bak`. A damaged file is salvaged field by field: the update channel, the pinned port, the summary provider and App settings are kept when they are still valid. A truncated file keeps the channel and port. An unreadable file resets everything to defaults.
+- **Fix:** nothing is needed; check Preferences if something looks different. A changed port makes saved layers look reset (see "Port in use").
+
+### What you will see on first launch (upstream behaviour, not app bugs)
+- The "Choose your first view" dialog can reappear on every launch until it is dismissed.
+- The Live Vessels toggle shows a red "UNAVAILABLE" pill with "AISSTREAM_API_KEY not set" until you add that key; the status chip keeps saying "KEYS WAITING" for the optional keys you have not set.
+- The engine console (and `server.log`) can show "Google 3D Tiles unavailable, using the keyless globe", a 503 for the AIS snapshot, and feed download failures (for example a CCTV source returning 403, or a terrain refresh that did not finish). These come from God's Eye View itself and need no action.
 
 ### Reset everything
 Quit OpenTac, back up `C/.env` if you want to keep your keys, and delete the data directory (or just

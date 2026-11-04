@@ -238,6 +238,12 @@ export class FakeCheckout implements CheckoutManager {
     this.rec('commitLog');
     return this.log;
   }
+  /** Knob for the uncapped count; null means the length of `log.commits`. */
+  countValue: number | null = null;
+  async countCommits(): Promise<number> {
+    this.rec('countCommits');
+    return this.countValue ?? this.log.commits.length;
+  }
   async diffStat(): Promise<string> {
     this.rec('diffStat');
     return this.stat;
@@ -340,9 +346,12 @@ export class FakeServer implements ServerManager {
     this.current = { port: opts.port, url: `http://127.0.0.1:${opts.port}/`, pid: 4242 };
     return this.current;
   }
+  /** When set, stop() waits for it (a slow shutdown). */
+  stopGate: Promise<void> | null = null;
   async stop(): Promise<void> {
     this.stops += 1;
     this.trace.push('server.stop');
+    if (this.stopGate !== null) await this.stopGate;
     this.current = null;
   }
   isRunning(): boolean {

@@ -30,8 +30,8 @@ Quit OpenTac before deleting anything.
 | `checkout/node_modules/.vite/` | `viteCacheDir` | Vite's dependency-optimisation cache. First start after it is gone takes up to about 60 s. | Yes. Rebuilt automatically. |
 | `checkout/.gev-cache/` | `gevCacheDir` | Engine runtime cache (the engine writes it relative to its working directory, which is the checkout). Git-ignored upstream. | Yes. Refilled as feeds are fetched. Preserved by updates and Reset. |
 | `checkout/.gev-logs/` | `gevLogsDir` | Engine-side logs written by the engine itself. Git-ignored upstream. | Yes. |
-| `state.json` | `stateFile` | The shell's state, schema version 1: channel, `remoteUrl`, installed commit / lockfile hash / Node version, `rollbackCommit`, last update check, `lastPort`, update-on-launch flag, `skippedCommit`, main window bounds, remembered USB devices, and the AI preference (`provider`, `model`, `ollamaHost`) and an `app` object with OpenTac's own settings (`launchAtLogin`, `autoRestartOnCrash`, `updateCheckInterval`, `logLevel`, `proxy` as `{ httpsProxy, noProxy }`, `engineRemoteUrl`; fields missing from an older file take their defaults, the schema version stays 1). Contains no secrets: proxy and mirror addresses with a user name or password are refused. Written atomically, mode 0600. | Yes, but you lose the pinned port (saved layers and permissions are keyed by origin and will look reset), channel, skipped version and USB choices. The next launch re-detects the install state. |
-| `state.json.bak` | `stateBackupFile` | Copy of a `state.json` that failed validation, kept when the shell falls back to defaults (the corrupt-state drill). | Yes. |
+| `state.json` | `stateFile` | The shell's state, schema version 1: channel, `remoteUrl`, installed commit / lockfile hash / Node version, `rollbackCommit`, last update check, `lastPort`, update-on-launch flag, `skippedCommit`, main window bounds, remembered USB devices, and the AI preference (`provider`, default `openai` for new installs, `model`, `ollamaHost`) and an `app` object with OpenTac's own settings (`launchAtLogin`, `autoRestartOnCrash`, `updateCheckInterval`, `logLevel`, `proxy` as `{ httpsProxy, noProxy }`, `engineRemoteUrl`; fields missing from an older file take their defaults, the schema version stays 1). Contains no secrets: proxy and mirror addresses with a user name or password are refused. Written atomically, mode 0600. | Yes, but you lose the pinned port (saved layers and permissions are keyed by origin and will look reset), channel, skipped version and USB choices. The next launch re-detects the install state. |
+| `state.json.bak` | `stateBackupFile` | Copy of a `state.json` that failed validation, kept when the shell falls back to defaults (the corrupt-state drill). The new `state.json` keeps what could be salvaged: a damaged file is recovered field by field (channel, port, summary provider, App settings), a truncated file keeps channel and port, an unreadable one resets everything; a one-time notice at startup says so. | Yes. |
 | `secrets.json` | (secrets module) | OpenRouter and xAI keys for the AI gateway, encrypted with Electron `safeStorage`; the key that protects the file lives in your login Keychain. Mode 0600. Not the engine's keys. | Yes. You re-enter the OpenRouter/xAI keys in Preferences › API keys. |
 | `npm-cache/` | `npmCacheDir` | npm's download cache for `npm ci`. Lets a failed update reinstall the previous dependencies while offline. | Yes. Costs a full re-download on the next install and removes the offline rollback safety net. |
 | `env.backup` | (controller) | Temporary copy of `checkout/.env` taken before the checkout is deleted (re-download) and restored after the new clone. | Yes, once no re-download is in progress. |
@@ -76,7 +76,7 @@ Unpackaged development builds use `vendor/node/darwin-<arch>/`, `resources/launc
 | Failed engine update, automatic rollback | kept | kept | restored from the npm cache if the lockfile differs | kept (`rollbackCommit` retained if rollback also fails) | kept | kept | kept |
 | Switch channel | kept | kept | as for an update | kept (channel changed) | kept | kept | kept |
 | *Reset and update* (disclosure button: dirty tree, or backwards move; `resetToTarget`) | kept | kept | kept unless the lockfile changes | kept | kept | kept | kept |
-| *Reset engine files* (error-panel button) or *Engine › Reset to Upstream…* (ERROR phase only; `resetCheckout`) | kept (restored from `env.backup` into the fresh clone) | **lost** | **lost** (reinstalled) | kept (installed fields cleared, then re-set) | kept | kept | kept |
+| *Reset engine files* (error-panel button) or *Engine › Download Engine Again…* (ERROR phase only; `resetCheckout`) | kept (restored from `env.backup` into the fresh clone) | **lost** | **lost** (reinstalled) | kept (installed fields cleared, then re-set) | kept | kept | kept |
 | *Reinstall Dependencies…* | kept | kept | deleted and reinstalled | kept | kept | kept | kept |
 | App update (new OpenTac version) | kept | kept | kept | kept | kept | kept | kept |
 | Delete `checkout/` | **lost** | lost | lost | kept (stale install fields are re-detected) | kept | kept | kept |
@@ -85,9 +85,8 @@ Unpackaged development builds use `vendor/node/darwin-<arch>/`, `resources/launc
 
 The two resets are different operations. *Reset and update* moves the existing checkout to the
 target commit and discards only changes to **tracked** files (nothing the user entered, since keys
-live in the git-ignored `.env`). *Reset engine files* / *Reset to Upstream…* asks "Download the engine
+live in the git-ignored `.env`). *Reset engine files* / *Download Engine Again…* asks once, "Download the engine
 again?", deletes the whole `checkout/` (`rm -rf`), re-clones and reinstalls; only `.env` is carried
-over, through `env.backup`. The menu item does nothing unless the app is in the ERROR phase (it
-returns immediately in any other phase), so from a running globe use the update disclosure instead.
+over, through `env.backup`. Outside the ERROR phase the menu item only shows an explanatory message and deletes nothing, so from a running globe use the update disclosure instead.
 Uninstalling OpenTac does not remove the data
 or logs directories; delete them by hand for a clean slate.

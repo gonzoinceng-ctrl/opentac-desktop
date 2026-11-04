@@ -13,3 +13,16 @@ const api: OpenTacMainApi = {
 };
 
 contextBridge.exposeInMainWorld('openTac', api);
+
+// Recovery from a dead globe: Cesium shows `.cesium-widget-errorPanel` after a render-loop error and
+// stops rendering for good. Tell the main process (one-way) so it can reload the page.
+let lastReport = 0;
+function reportRenderError(): void {
+  const panel = document.querySelector('.cesium-widget-errorPanel');
+  if (panel === null) return;
+  const now = Date.now();
+  if (now - lastReport < 5000) return;
+  lastReport = now;
+  ipcRenderer.send(IPC.renderError, (panel.textContent ?? '').slice(0, 500));
+}
+setInterval(reportRenderError, 2000);

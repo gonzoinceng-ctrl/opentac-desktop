@@ -20,6 +20,8 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
+  # The app serves its UI over app:// and the engine over http://127.0.0.1; it never loads file://.
+  grantFileProtocolExtraPrivileges: false
   resetAdHocDarwinSignature: true
 asarUnpack:
   # dugite's git binaries cannot execute from inside the asar.
@@ -48,7 +50,13 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   notarize: true          # APPLE_API_KEY must be a PATH to the .p8 file (+ APPLE_API_KEY_ID, APPLE_API_ISSUER); CI verifies with stapler/spctl because a missing credential only warns
   extendInfo:
-    NSMicrophoneUsageDescription: "OpenTac uses the microphone for hands-free voice control."
+    NSMicrophoneUsageDescription: "OpenTac uses the microphone for the voice feature of God's Eye View (hands-free voice control)."
+    # Electron's template ships generic placeholders for these; OpenTac itself never uses them, they
+    # only apply if a page in the engine asks the browser for the device.
+    NSCameraUsageDescription: "OpenTac does not use the camera. macOS only asks if a page inside God's Eye View requests it."
+    NSBluetoothAlwaysUsageDescription: "OpenTac does not use Bluetooth. macOS only asks if a page inside God's Eye View requests it."
+    NSBluetoothPeripheralUsageDescription: "OpenTac does not use Bluetooth. macOS only asks if a page inside God's Eye View requests it."
+    NSAudioCaptureUsageDescription: "OpenTac does not record system audio. macOS only asks if a page inside God's Eye View requests it."
     LSMinimumSystemVersion: "13.5"
   minimumSystemVersion: "13.5"   # Electron 45 needs macOS 13; the official Node 24 binaries need 13.5
 dmg:

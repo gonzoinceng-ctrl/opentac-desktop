@@ -18,9 +18,9 @@ privileges: { standard: true, secure: true, supportFetchAPI: true } }])`,
 
 `boot()`: resolve `Paths` (`app.getPath('userData')`, `app.getPath('logs')`, `process.resourcesPath`,
 `app.getAppPath()`, `app.isPackaged`, `process.arch`), `ensureDataDirs`, create the electron-log sink
-and `Logger`, load `ShellState`, register `app://` via `protocol.handle` serving
+and `Logger`, load `ShellState` (a damaged `state.json` is salvaged field by field: channel, port, summary provider and app settings are kept when valid, a truncated file keeps channel and port, garbage resets; a one-time startup notice says what was kept), register `app://` via `protocol.handle` serving
 `dist/renderer/setup/**` only (path-traversal guard; 404 otherwise), install permission handlers,
-build the menu, create the `AppController`, and call `controller.start()`.
+build the menu, create the `AppController`, and call `controller.start()`. Boot never waits for `safeStorage` (the Keychain prompt) before creating windows; key storage simply reports unavailable until it answers.
 
 Lifecycle: `window-all-closed` does nothing on macOS (server keeps running; Dock icon stays);
 `activate` re-shows the main window when `RUNNING`, else the setup window. `before-quit` sets a
@@ -71,8 +71,8 @@ sentences (no stacks). Actions by context: `retry`, `showLogs`, `reinstall`, `re
 `changePort`, `rollback`, `quit`.
 
 Crash policy: a `server` exit event with `expected: false` while RUNNING → CRASHED, setup window
-shows the last 200 ring lines and Restart / Show Logs / Reinstall. One automatic restart if the
-previous automatic restart was more than 60 s ago, otherwise wait for the user.
+shows the engine output since the current start (not a fixed 200 lines), names the exit reason (signal or exit code) and offers Restart / Show Logs / Reinstall. One automatic restart if the
+previous automatic restart was more than 60 s ago, otherwise wait for the user. During the automatic restart the setup window stays hidden; after a successful restart a notice says what happened.
 
 `OPENTAC_FAIL_START_ONCE`: the controller reads it from its own env once, passes it to exactly one
 `server.start()` call via `extraEnv`, then forgets it.
@@ -80,13 +80,13 @@ previous automatic restart was more than 60 s ago, otherwise wait for the user.
 ## 3. Update flow (`src/main/update.ts`)
 
 `checkForUpdates({ interactive })`:
-1. CHECKING. Cheap path first: `checkout.lsRemote(remoteUrl, [targetRef])`; if the remote SHA equals
+1. CHECKING. Cheap path first: `checkout.lsRemote(remoteUrl, [targetRef])` (30 s timeout; a timeout counts as offline); if the remote SHA equals
    `head()` → "Up to date" (no fetch). Else `checkout.fetch()`; `NETWORK` → if interactive show a
-   non-blocking "Couldn't reach GitHub" toast in the setup window, else log; back to RUNNING.
+   non-blocking "Couldn't reach GitHub" notice in the setup window, else log; back to RUNNING. An interactive check shows a "Contacting GitHub…" panel after 1.5 s; Dismiss hides the window.
    `TAG_DRIFT` → ERROR with a clear explanation (mirror integrity), never auto-recover.
 2. `resolveTarget(channel)`, `status(target)`. `behind === 0` → up to date (message names
    `upstreamTag ?? short sha` and the `stable-*` tag). If `!isAncestor` → disclosure flagged
-   `needsReset` (backwards move, e.g. channel switch from candidate to stable).
+   `needsReset` (backwards move, e.g. channel switch from candidate to stable), shown as a downgrade: its own title, a warning banner and the number of commits removed.
 3. Build `Disclosure`: remote (redacted), channel, from → to (tag names when known), commit count
    (+ truncated flag), subjects newest first, author, date, `diffStat`, `lockfileChanged`,
    compare URL `https://github.com/<owner>/<repo>/compare/<from>...<to>` derived from the remote
@@ -107,7 +107,7 @@ previous automatic restart was more than 60 s ago, otherwise wait for the user.
 5. STARTING → RUNNING; `webContents.reload()` on the main window; save `installedCommit`,
    clear `rollbackCommit`, `skippedCommit`.
 6. Any failure in 3–5 → ROLLING_BACK: `checkoutDetached(rollbackCommit)`, reinstall if the lock
-   differs from `installedLockHash`, start. If that also fails → ERROR with Retry / Reinstall /
+   differs from `installedLockHash`, start. The panel reads "Restoring the previous version"; on success the failed target is saved as `skippedCommit` and the final notice says so. If that also fails → ERROR with Retry / Reinstall /
    Show Logs; `rollbackCommit` stays in state so the next boot offers it.
 
 Launch and in-session checks: on RUNNING + 20 s, then every 6 h while RUNNING, on `powerMonitor`
@@ -121,7 +121,7 @@ backwards move shows the "older commit" notice and goes through `resetAndUpdate`
 
 `import updater from 'electron-updater'; const { autoUpdater } = updater;` (CJS getter export).
 `autoDownload = false`, `allowDowngrade = false`, `allowPrerelease = false`, logger = our logger.
-Inactive when `!app.isPackaged`. Check on RUNNING + 30 s and from the App menu. On
+Inactive when `!app.isPackaged`. `app-update.yml` is written only by `dist` (dmg/zip) builds, so a `npm run pack` build cannot test the shell auto-update path. Check on RUNNING + 30 s and from the App menu. On
 `update-available`: dialog "OpenTac X is available. Download now?" → `downloadUpdate()`. On
 `update-downloaded`: dialog "Restart to update" → `controller.shutdown()` **then**
 `autoUpdater.quitAndInstall()` (quitAndInstall closes windows before `before-quit`, so the engine
@@ -146,6 +146,7 @@ must be stopped explicitly first). All strings say "OpenTac" / "the app", never 
 - `did-fail-load` with `ERR_CONNECTION_REFUSED` while RUNNING (Vite restarting after a key save)
   → retry `loadURL` every 500 ms for up to 15 s before treating it as a problem; the child has not
   exited, so it is not a crash.
+- **Cesium render halt** (upstream's "cartesian has a NaN component" / "Rendering has stopped"): the main-window preload reports Cesium's error overlay; the shell reloads the page after about 1.5 s, at most three times in ten minutes (`shouldAutoReloadAfterRenderError`), then shows a "The globe stopped drawing" dialog with *Reload Page* / *Not Now*. Nothing in the checkout is patched.
 
 ## 6. Ports (`src/main/controller.ts` + `ports.ts`)
 
@@ -214,11 +215,11 @@ store keys. Keys are never logged, never in `state.json`, never in the engine `.
 
 ## 10. AI provider wiring
 
-When `state.ai.provider !== 'openai'`: start the gateway with a fresh random `authToken`
+The default for new installs is `openai` (upstream's own behaviour: no gateway, the engine's own OpenAI key row is editable); Ollama, OpenRouter and xAI are opt-in in Preferences › AI summaries (the Ollama model is a select fed by Ollama; OpenAI shows no model box). When `state.ai.provider !== 'openai'`: start the gateway with a fresh random `authToken`
 (32 bytes hex) per launch, pass `aiGatewayUrl` and `extraEnv.OPENTAC_AI_GATEWAY_TOKEN` to the
 server, and `injectPlaceholderOpenAiKey = !(await envFileHasKey(paths.envFile, 'OPENAI_API_KEY'))`.
 Changing the provider in Preferences restarts the engine server (RESTARTING) because the env
-must change; the panel says so. The "Test" button calls `gateway.testPrompt()` and shows text,
+must change; the panel says so, Preferences stays open through the restart and then reads "Saved. The engine has restarted with the new provider." The "Test" button calls `gateway.testPrompt()` and shows text,
 latency and `finishReason`/error plainly. The panel carries the two fixed lines: "Voice control
 uses OpenAI or Gemini — configure those in the engine's POWER UP panel." and "While a non-OpenAI
 summary provider is active, the engine's OpenAI key row is locked; switch back to OpenAI to edit it."
@@ -226,21 +227,21 @@ summary provider is active, the engine's OpenAI key row is locked; switch back t
 ## 11. Menu (`src/main/menu.ts`)
 
 - **OpenTac**: About OpenTac… (custom panel in the setup window: both versions, attribution line,
-  licences link, GPU status button) · Check for App Updates… · Preferences… (⌘,) · Hide/Quit.
+  Engine source (the remote), a credit link to the upstream repository, licences link: THIRD_PARTY_NOTICES.md on GitHub until the website domain is live, GPU status button) · Check for App Updates… · Preferences… (⌘,) · Hide/Quit.
 - **Engine**: Check for Engine Updates… · Open in Browser · Restart Server · Reload Page ·
   Provider Settings help (external README anchor) · Show Logs · Reinstall Dependencies… ·
-  Reset to Upstream… (confirm dialog listing what is lost: nothing the user entered).
+  Download Engine Again… (asks once; acts only in ERROR, otherwise shows an explanatory message and does nothing; nothing the user entered is lost).
 - **View**: Reload (same as Reload Page), zoom, fullscreen, **Developer** submenu: Toggle
   DevTools, GPU status (awaits `app.getGPUInfo('basic')` then logs `getGPUFeatureStatus()`),
   Open Data Folder, Copy Diagnostics (versions + last 50 log lines, redacted).
-- **Window**: standard. **Help**: Upstream README · Report an engine issue (upstream) · Report an
+- **Window**: Minimize, Zoom, Close (Cmd-W), Bring All to Front. **Help**: Upstream README · Report an engine issue (upstream) · Report an
   app issue (wrapper repo) · opentac.icu.
 
 ## 12. Setup renderer (`src/renderer/setup/`)
 
 Plain TypeScript, no framework, one `index.html` with panels toggled by `phase`:
 `progress` (phase title, determinate/indeterminate bar, streaming log tail with auto-scroll and
-a pause-on-scroll-up), `disclosure`, `crash`, `error`, `about`, `preferences` (tabs: General, Updates,
+a pause-on-scroll-up; RUNNING shows only a compact status line and the window hides after the last notice is dismissed; npm "deprecated"/"install-scripts" advisories are filtered from the tail), `disclosure` (its decision buttons are sticky and always in view), `crash`, `error`, `about`, `preferences` (tabs: General, Updates,
 API keys, AI summaries, Engine settings, App settings), `usb-picker.html` (separate page). First screen carries the attribution line
 and the honest first-run copy ("downloading the God's Eye View source (~200 MB) and its
 dependencies (~400 MB) from GitHub and npm"). Strict CSP meta `default-src 'self'; style-src
@@ -287,7 +288,7 @@ env var names) is used only (a) for the static fallback shown while the engine i
 set/unset read from the names of non-empty variables in `.env` via `envFileKeys`, and (b) to add the one
 row the engine hides from its status (`google-maps-server`) under "Advanced keys". Rows with
 `managed: 'external'` are **Locked**; the OpenAI row gets the placeholder explanation (DECISIONS "Engine
-contract drift") when the summary provider is not OpenAI. After a successful save the engine restarts
+contract drift") when an opt-in non-OpenAI summary provider is chosen. After a successful save the engine restarts
 itself about 250 ms later and the child process **does not exit**: the controller makes no phase change
 (nothing can reach CRASHED), updates the row optimistically and polls the status quietly until the
 engine answers again.
@@ -300,7 +301,7 @@ region table for every `CCTV_<REGION>_*` variable (one row per region: enabled c
 optional URL and districts). Never offered: the 11 registry variables, `HOST`, `PORT`,
 `GEV_ALLOWED_HOSTS`, `GEV_KEY_SETUP_TRUSTED_PEERS`, `GEV_EMBED_FRAME_ANCESTORS`, `VITE_*` and
 `CCTV_SOURCES_FILE/JSON`, `CCTV_PREFER_AUSTIN`, `CCTV_FORCE_AUSTIN`, the two Vegvesen sub-switches.
-`validateSetting(key, value)` returns `{ ok: true, value }` (normalised: booleans to the setting's own
+A half-typed number (for example `1e` or `-`) is refused inline at the field and nothing is written; errors appear at the field, pasted keys are trimmed, and a warning shows only when it applies to the current value. `validateSetting(key, value)` returns `{ ok: true, value }` (normalised: booleans to the setting's own
 `1/0` or `true/false`, numbers canonical) or `{ ok: false, reason }`; every value rejects control
 characters and the dotenv metacharacters (hash, both quote marks, dollar sign, backslash and backtick), so what is written is what the engine reads
 back. `writeEngineSettings(envFile, patch)` mirrors upstream's `upsertDotenvValues`: replace the last
@@ -336,6 +337,6 @@ buttons; Reset is enabled only in ERROR, where the controller honours it).
 **Renderer.** Pure helpers in `view.ts` (`keyRowState`, `settingFieldModel`, `regionRowModels`,
 `buildSettingsPatch`, ...) are unit tested; `setup.ts` builds key rows once per id set and updates them in
 place so typing is never lost on a state push, and builds the engine settings groups once from the
-catalogue. Every input has a label or `aria-label`; Esc closes Preferences. Key rows save per row (Save,
+catalogue. Every input has a label or `aria-label`; Esc closes Preferences. Preferences stays open through a settings-driven engine restart, and its tabs and Done button are sticky (stay in view while scrolling). The key summary reads "N of M keys set" and ignores the locked OpenAI placeholder. Key rows save per row (Save,
 Clear, Show/Hide); engine settings have one Save per group with the visible note "Saving restarts the
 engine to apply the settings."; app settings save on change (text fields have a Save button).

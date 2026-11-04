@@ -4,7 +4,7 @@
 // list by prefix). No email is sent and nothing leaves Cloudflare. Rate limit: 5 messages per hour per
 // client IP, tracked under a hashed key that expires with the hour. The IP is never stored with a message.
 //
-// Browser without JavaScript: form POST -> 303 to /contact/thanks/ (errors: a small HTML page).
+// Browser without JavaScript: form POST -> 303 to /contact/thanks/ (errors: the site's styled /contact/error/ page with the message filled in).
 // With contact.js (fetch, Accept: application/json): JSON { ok: true } or { ok: false, error }.
 
 interface KVNamespaceLike {
@@ -13,6 +13,8 @@ interface KVNamespaceLike {
 }
 interface Env {
   CONTACT_KV: KVNamespaceLike;
+  /** Pages static assets binding; used to render the styled error page. Optional so the bare page is the fallback. */
+  ASSETS?: { fetch(input: Request | string | URL): Promise<Response> };
 }
 interface Ctx {
   request: Request;
@@ -55,7 +57,28 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
 const escHtml = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
 
-function errorPage(message: string, status: number, extra: Record<string, string> = {}): Response {
+// The styled page is built with the site (site/build.mjs renders /contact/error/ through the same header and
+// footer partials). The message goes between the <!--MSG--> markers. Its CSP allows the site's own CSS only.
+const SITE_PAGE_CSP =
+  "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+const MSG_SLOT = /<!--MSG-->[\s\S]*?<!--\/MSG-->/;
+
+async function errorPage(message: string, status: number, extra: Record<string, string> = {}, env?: Env, request?: Request): Promise<Response> {
+  if (env?.ASSETS && request) {
+    try {
+      const res = await env.ASSETS.fetch(new URL('/contact/error/', request.url));
+      const template = res.ok ? await res.text() : '';
+      if (MSG_SLOT.test(template)) {
+        const html = template.replace(MSG_SLOT, () => escHtml(message));
+        return new Response(html, {
+          status,
+          headers: { ...SECURITY_HEADERS, 'Content-Security-Policy': SITE_PAGE_CSP, 'Content-Type': 'text/html; charset=utf-8', ...extra },
+        });
+      }
+    } catch {
+      /* fall through to the bare page */
+    }
+  }
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Message not sent | OpenTac</title></head><body><main><h1>Your message was not sent</h1><p>${escHtml(message)}</p><p><a href="/contact/">Back to the contact form</a></p></main></body></html>`;
   return new Response(html, { status, headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', ...extra } });
 }
@@ -104,8 +127,8 @@ export const onRequestPost = async ({ request, env }: Ctx): Promise<Response> =>
   const wantsJson =
     (request.headers.get('Accept') ?? '').includes('application/json') ||
     (request.headers.get('Content-Type') ?? '').toLowerCase().startsWith('application/json');
-  const fail = (status: number, message: string, extra: Record<string, string> = {}): Response =>
-    wantsJson ? json({ ok: false, error: message }, status, extra) : errorPage(message, status, extra);
+  const fail = async (status: number, message: string, extra: Record<string, string> = {}): Promise<Response> =>
+    wantsJson ? json({ ok: false, error: message }, status, extra) : errorPage(message, status, extra, env, request);
 
   try {
     // Same-origin only (browsers send Origin on POST). Non-browser clients without Origin are allowed.
@@ -146,8 +169,8 @@ export const onRequestPost = async ({ request, env }: Ctx): Promise<Response> =>
 
     return wantsJson ? json({ ok: true }, 200) : redirectThanks(request);
   } catch (e) {
-    if (e instanceof Reject) return fail(e.status, e.message, e.status === 429 ? { 'Retry-After': String(RATE_WINDOW_S) } : {});
-    return fail(500, 'Something went wrong on our side. Please try again later, or open an issue on GitHub.');
+    if (e instanceof Reject) return await fail(e.status, e.message, e.status === 429 ? { 'Retry-After': String(RATE_WINDOW_S) } : {});
+    return await fail(500, 'Something went wrong on our side. Please try again later, or open an issue on GitHub.');
   }
 };
 

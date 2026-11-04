@@ -76,6 +76,7 @@ import { GitError, redactRemoteUrl } from './git.js';
 import type { InstallManager } from './install.js';
 import type { Logger } from './logger.js';
 import type { Paths } from './paths.js';
+import { ollamaHostWarning } from './policy.js';
 import { findFreePort, isPortFree } from './ports.js';
 import type { RingBuffer } from './ringBuffer.js';
 import { ServerError, type ServerHandle, type ServerManager, type ServerStartOptions } from './server.js';
@@ -102,6 +103,14 @@ export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export const OFFLINE_BACKOFF_MS = 15 * 60 * 1000;
 /** A check this close to the limit still counts as due (the interval fires just under 6 h). */
 export const CHECK_RATE_TOLERANCE_MS = 60_000;
+/** "abc1234" or "abc1234 (stable-x)" becomes "commit abc1234 ..."; tags are left alone. */
+export function readableVersionLabel(label: string): string {
+  return /^[0-9a-f]{7}(?= |$)/.test(label) ? `commit ${label}` : label;
+}
+
+/** A restart from RUNNING shows the setup window only if it has not finished within this time. */
+export const RESTART_OVERLAY_DELAY_MS = 1500;
+
 /** Two automatic crash restarts must be at least this far apart. */
 export const AUTO_RESTART_GUARD_MS = 60_000;
 /** Delay before the single automatic retry after EADDRINUSE. */
@@ -271,6 +280,8 @@ export interface ControllerDeps {
   paths: Paths;
   log: Logger;
   initialState: ShellState;
+  /** Shown once after the first start when state.json was damaged and reset (FD-07). */
+  startupNotice?: string;
   saveState: (s: ShellState) => Promise<void>;
   checkout: CheckoutManager;
   install: InstallManager;
@@ -342,6 +353,11 @@ const PHASE_MESSAGES: Readonly<Record<Phase, string>> = {
   ERROR: 'Something went wrong.',
 };
 
+/** An interactive update check shows its status window after this long. */
+const CHECK_REVEAL_MS = 1500;
+
+const ROLLBACK_MESSAGE = "The update didn't start. Restoring the previous version…";
+
 const CLONE_LABELS: Readonly<Record<string, string>> = {
   counting: 'Counting objects',
   compressing: 'Compressing objects',
@@ -403,7 +419,19 @@ export function createController(deps: ControllerDeps): ShellController {
   const storedRemote = deps.initialState.app.engineRemoteUrl;
   const launchRemoteOverride = engineRemoteAllowed(storedRemote, deps.isPackaged) ? storedRemote : null;
   if (launchRemoteOverride !== storedRemote) log.warn('ignoring a file:// engine mirror override in a packaged build');
-  const effectiveRemote = (): string => engineOverrides.remoteUrl ?? launchRemoteOverride ?? state.remoteUrl;
+  /** The remote the checkout's origin should point at between runs (never the one-run env override). */
+  const persistentRemote = (): string => launchRemoteOverride ?? state.remoteUrl;
+  const effectiveRemote = (): string => engineOverrides.remoteUrl ?? persistentRemote();
+  /** Human name of the update source for notices: GitHub only when the remote really is GitHub. */
+  const remoteName = (): string => {
+    try {
+      const host = new URL(effectiveRemote()).hostname.toLowerCase();
+      if (host === 'github.com' || host === 'www.github.com') return 'GitHub';
+    } catch {
+      if (/^(?:[^@/\s]+@)?github\.com:/i.test(effectiveRemote())) return 'GitHub';
+    }
+    return 'the update server';
+  };
 
   const updater: UpdateManager =
     deps.update ??
@@ -414,6 +442,7 @@ export function createController(deps: ControllerDeps): ShellController {
       appVersion: deps.appVersion,
       remoteUrl: effectiveRemote,
       channel: () => state.channel,
+      fetchRemoteOverride: engineOverrides.remoteUrl,
       refOverride,
     });
 
@@ -425,6 +454,10 @@ export function createController(deps: ControllerDeps): ShellController {
   let notices: string[] = [];
   let preferencesOpen = false;
   let aboutOpen = false;
+  /** True while a settings-driven restart keeps Preferences open (SET-01). */
+  let holdPreferences = false;
+  /** True from the start of a rollback until it settles; keeps the "restoring" wording through the reinstall. */
+  let rollingBack = false;
   let versionsCache: Versions | null = null;
   let aiStatus: Pick<AiPrefsPublic, 'hasOpenRouterKey' | 'hasXaiKey' | 'encryptionAvailable'> = {
     hasOpenRouterKey: false,
@@ -456,6 +489,7 @@ export function createController(deps: ControllerDeps): ShellController {
   const sleepers = new Set<{ handle: unknown; resolve: () => void }>();
   let saveQueue: Promise<void> = Promise.resolve();
   let lastAutoRestartAt: number | null = null;
+  let restartOverlayTimer: unknown = null;
   let installedSinceStart = false;
   /** Provider the running (or last started) engine was launched with; null before the first launch. */
   let launchedProvider: AiProvider | null = null;
@@ -501,6 +535,7 @@ export function createController(deps: ControllerDeps): ShellController {
       notices: [...notices],
       preferencesOpen,
       aboutOpen,
+      ...(rollingBack ? { rollingBack: true } : {}),
     };
   }
 
@@ -555,10 +590,13 @@ export function createController(deps: ControllerDeps): ShellController {
     if (from === 'DISCLOSING') pending = null;
     progress = null;
     message = to === 'ERROR' && error !== null ? error.message : PHASE_MESSAGES[to];
-    if (to !== 'RUNNING' && to !== 'CHECKING') {
+    if (rollingBack && (to === 'INSTALLING' || to === 'STARTING')) message = ROLLBACK_MESSAGE;
+    const keepPrefs = holdPreferences && (to === 'RESTARTING' || to === 'STARTING' || to === 'RUNNING');
+    if (to !== 'RUNNING' && to !== 'CHECKING' && !keepPrefs) {
       preferencesOpen = false;
       aboutOpen = false;
     }
+    if (to !== 'RESTARTING' && to !== 'STARTING') holdPreferences = false;
     emitNow();
   }
 
@@ -631,12 +669,13 @@ export function createController(deps: ControllerDeps): ShellController {
 
   async function refreshAiStatus(): Promise<void> {
     try {
-      const [hasOpenRouterKey, hasXaiKey, encryptionAvailable] = await Promise.all([
-        secrets.has('openrouter'),
-        secrets.has('xai'),
-        secrets.available(),
-      ]);
-      aiStatus = { hasOpenRouterKey, hasXaiKey, encryptionAvailable };
+      // has() only reads secrets.json. available() may touch the Keychain (and so a password
+      // prompt), so it is awaited last and bounded by the secrets module's timeout.
+      const [hasOpenRouterKey, hasXaiKey] = await Promise.all([secrets.has('openrouter'), secrets.has('xai')]);
+      aiStatus = { ...aiStatus, hasOpenRouterKey, hasXaiKey };
+      const encryptionAvailable = await secrets.available();
+      aiStatus = { ...aiStatus, encryptionAvailable };
+      if (!encryptionAvailable) log.warn('secure key storage is not available; provider keys cannot be saved');
     } catch (err) {
       log.warn(`could not read secret status: ${errText(err)}`);
     }
@@ -741,6 +780,7 @@ export function createController(deps: ControllerDeps): ShellController {
     }
     return {
       app: deps.appVersion,
+      packaged: deps.isPackaged,
       electron: deps.electronVersion,
       chromium: deps.chromiumVersion,
       bundledNode,
@@ -768,7 +808,8 @@ export function createController(deps: ControllerDeps): ShellController {
 
   async function syncRemote(): Promise<void> {
     try {
-      const want = effectiveRemote();
+      // The one-run OPENTAC_ENGINE_REMOTE is never written to origin; fetches use it directly.
+      const want = persistentRemote();
       const have = await checkout.remoteUrl();
       if (have !== want) {
         log.info(`origin is ${redactRemoteUrl(have)}; pointing it at ${redactRemoteUrl(want)}`);
@@ -812,6 +853,8 @@ export function createController(deps: ControllerDeps): ShellController {
       setProgress(CLONE_LABELS[p.phase] ?? 'Downloading', p.pct);
     });
     await restoreEnv();
+    // git clone sets origin to the URL it cloned from; put the persistent one back.
+    if (effectiveRemote() !== persistentRemote()) await syncRemote();
     await checkoutTarget();
   }
 
@@ -849,7 +892,8 @@ export function createController(deps: ControllerDeps): ShellController {
   // -------------------------------------------------------------------------
 
   async function pickDifferentPort(exclude: number | null): Promise<number> {
-    for (let p = DEFAULT_PORT; p <= DEFAULT_PORT + 100; p += 1) {
+    // Never the default port: another OpenTac install may own it (FD-11).
+    for (let p = DEFAULT_PORT + 1; p <= DEFAULT_PORT + 100; p += 1) {
       if (p !== exclude && (await ports.isPortFree(p))) return p;
     }
     const p = await ports.findFreePort({ rangeStart: DEFAULT_PORT + 101, rangeEnd: DEFAULT_PORT + 400 });
@@ -913,6 +957,7 @@ export function createController(deps: ControllerDeps): ShellController {
   }
 
   function enterRunning(handle: ServerHandle, reason: string): void {
+    disarmRestartOverlay();
     runningPort = handle.port;
     missedCrash = null;
     transition('RUNNING', reason);
@@ -925,7 +970,7 @@ export function createController(deps: ControllerDeps): ShellController {
       ui.showMain(handle.url);
       ui.setMainEnabled(true);
     }
-    ui.hideSetup();
+    if (!preferencesOpen) ui.hideSetup();
     scheduleBackgroundChecks();
     void refreshVersions();
     void refreshEngineKeys();
@@ -1069,26 +1114,58 @@ export function createController(deps: ControllerDeps): ShellController {
     error = crashUserError(exit, ring.tail(1)[0] ?? null);
     transition('CRASHED', 'server exited unexpectedly');
     ui.setMainEnabled(false);
-    ui.showSetup();
     const t = now();
     if (!state.app.autoRestartOnCrash) {
       log.warn('not restarting automatically: automatic restart after a crash is switched off in App settings');
+      ui.showSetup();
     } else if (lastAutoRestartAt === null || t - lastAutoRestartAt > AUTO_RESTART_GUARD_MS) {
       lastAutoRestartAt = t;
       log.info('restarting the server automatically (once)');
+      // The setup window stays hidden while the automatic restart runs: it only appears if the
+      // restart fails (fail() raises it) or to tell the user afterwards what happened (FD-06).
       transition('STARTING', 'automatic restart after a crash');
-      await startAndRun('start', false, 'restarted after a crash');
+      const how =
+        exit.signal !== null
+          ? `it was stopped by signal ${exit.signal}`
+          : `it exited with code ${exit.code === null ? 'unknown' : String(exit.code)}`;
+      const ok = await startAndRun('start', false, 'restarted after a crash');
+      if (ok && !shuttingDown) {
+        addNotice(`God's Eye View stopped unexpectedly (${how}) and was restarted automatically.`);
+        ui.showSetup();
+      }
     } else {
       log.warn('not restarting automatically: the previous automatic restart was under 60 s ago');
+      ui.showSetup();
     }
   }
 
-  async function restartEngine(why: string): Promise<void> {
+  function armRestartOverlay(): void {
+    disarmRestartOverlay();
+    restartOverlayTimer = timers.setTimeout(() => {
+      restartOverlayTimer = null;
+      const p = machine.phase();
+      if (!shuttingDown && (p === 'RESTARTING' || p === 'STARTING')) ui.showSetup();
+    }, RESTART_OVERLAY_DELAY_MS);
+  }
+
+  function disarmRestartOverlay(): void {
+    if (restartOverlayTimer !== null) {
+      timers.clearTimeout(restartOverlayTimer);
+      restartOverlayTimer = null;
+    }
+  }
+
+  async function restartEngine(why: string, opts: { keepPreferences?: boolean } = {}): Promise<void> {
     const from = machine.phase();
     if (from === 'RUNNING') {
+      // A restart caused by a Preferences save keeps Preferences on screen (SET-01).
+      holdPreferences = opts.keepPreferences === true && preferencesOpen;
       transition('RESTARTING', why);
+      // The previous run's output is not this restart's progress (DU-07).
+      ring.clear();
       ui.setMainEnabled(false);
-      ui.showSetup();
+      // A restart usually takes about a second: only raise the setup window when it is slow.
+      armRestartOverlay();
       await stopServer();
       if (shuttingDown) return;
       transition('STARTING', 'restart: server stopped');
@@ -1114,7 +1191,7 @@ export function createController(deps: ControllerDeps): ShellController {
       log.info(`restartServer ignored in phase ${from}`);
       return;
     }
-    await startAndRun('start', false, why);
+    await startAndRun('start', false, 'engine is ready');
   }
 
   async function reinstall(): Promise<void> {
@@ -1160,7 +1237,9 @@ export function createController(deps: ControllerDeps): ShellController {
     const yes = await ui.confirm({
       title: 'Download the engine again?',
       message:
-        "OpenTac will delete its copy of the God's Eye View files and download them again. Your saved API keys (the engine .env file) are kept.",
+        "OpenTac will delete its copy of the God's Eye View files and download them again from the OpenTac engine mirror. Your saved API keys (the engine .env file) are kept.",
+      detail:
+        'Any edits made inside the engine folder are lost. Your settings, saved layers and API keys are not touched. This needs an internet connection and can take several minutes.',
       confirmLabel: 'Download again',
       destructive: true,
     });
@@ -1253,10 +1332,29 @@ export function createController(deps: ControllerDeps): ShellController {
     const { interactive } = opts;
     notices = [];
     transition('CHECKING', interactive ? 'user asked for an update check' : 'background update check');
+    // An interactive check that is still running after a moment gets a visible status (FD-04).
+    let revealed = false;
+    let revealTimer: unknown = null;
+    if (interactive) {
+      revealTimer = timers.setTimeout(() => {
+        revealTimer = null;
+        if (shuttingDown || machine.phase() !== 'CHECKING') return;
+        revealed = true;
+        ui.showSetup();
+        setProgress('Contacting GitHub…');
+      }, CHECK_REVEAL_MS);
+    }
+    const stopReveal = (): void => {
+      if (revealTimer !== null) {
+        timers.clearTimeout(revealTimer);
+        revealTimer = null;
+      }
+    };
     let result: UpdateCheck;
     try {
       result = await updater.check({ interactive });
     } catch (err) {
+      stopReveal();
       if (shuttingDown) return;
       log.error(err instanceof Error ? err : String(err));
       transition('RUNNING', 'update check failed');
@@ -1267,6 +1365,7 @@ export function createController(deps: ControllerDeps): ShellController {
       await settleRunning();
       return;
     }
+    stopReveal();
     if (shuttingDown) return;
 
     if (result.kind !== 'offline') {
@@ -1275,12 +1374,12 @@ export function createController(deps: ControllerDeps): ShellController {
 
     switch (result.kind) {
       case 'offline':
-        transition('RUNNING', "couldn't reach GitHub");
+        transition('RUNNING', `couldn't reach ${remoteName()}`);
         if (interactive) {
           ui.showSetup();
-          addNotice("Couldn't reach GitHub. The installed version keeps working.");
+          addNotice(`Couldn't reach ${remoteName()}. The installed version keeps working.`);
         } else {
-          log.info("update check: couldn't reach GitHub");
+          log.info(`update check: couldn't reach ${remoteName()}`);
         }
         offlineUntil = now() + OFFLINE_BACKOFF_MS;
         await settleRunning();
@@ -1290,10 +1389,13 @@ export function createController(deps: ControllerDeps): ShellController {
         return;
       case 'up-to-date':
         transition('RUNNING', 'engine is up to date');
+        if (revealed && !preferencesOpen) ui.hideSetup();
         if (interactive) {
+          // macOS shows only the message on a sheet, so the headline lives in the message (EU-08).
           void ui.notify({
             title: "God's Eye View is up to date",
-            message: `You have ${result.label}, the newest version on this channel.`,
+            message: "God's Eye View is up to date.",
+            detail: `You have ${readableVersionLabel(result.label)}, the newest version on this channel.`,
           });
         }
         await settleRunning();
@@ -1349,9 +1451,19 @@ export function createController(deps: ControllerDeps): ShellController {
     }
     log.warn(`rolling back to ${back.slice(0, 7)} because: ${errText(cause)}`);
     const attempted = updateInFlight;
+    rollingBack = true;
     transition('ROLLING_BACK', `update failed: ${errText(cause)}`);
     ui.showSetup();
     setProgress('Going back to the previous version…');
+    try {
+      await restoreAndRestart(back, attempted);
+    } finally {
+      rollingBack = false;
+      emitNow();
+    }
+  }
+
+  async function restoreAndRestart(back: string, attempted: string | null): Promise<void> {
     const restored = await guarded('rollback', async () => {
       await stopServer();
       await checkout.checkoutDetached(back);
@@ -1365,7 +1477,8 @@ export function createController(deps: ControllerDeps): ShellController {
     if (attempted !== null) await persist({ skippedCommit: attempted });
     const ok = await startAndRun('rollback', false, 'rolled back to the previous version');
     if (ok) {
-      const text = "The update didn't start, so OpenTac went back to the previous version of God's Eye View.";
+      const text =
+        "The update didn't start, so OpenTac went back to the previous version of God's Eye View. That update is marked as skipped; choose Check for Engine Updates to try it again.";
       addNotice(text);
       void ui.notify({ title: 'Update rolled back', message: text });
       void refreshVersions();
@@ -1557,6 +1670,10 @@ export function createController(deps: ControllerDeps): ShellController {
 
   async function setAi(payload: SetAiPayload): Promise<void> {
     const previous = state.ai.provider;
+    if (payload.provider === 'ollama') {
+      const warning = ollamaHostWarning(payload.ollamaHost);
+      if (warning !== null) log.warn(warning);
+    }
     await persist({
       ai: { provider: payload.provider, model: payload.model, ollamaHost: payload.ollamaHost },
     });
@@ -1566,7 +1683,7 @@ export function createController(deps: ControllerDeps): ShellController {
     log.info(`summary provider changed: ${previous} -> ${payload.provider}`);
     // Outside RUNNING the change is picked up by the next launch, or by settleRunning()
     // when the app returns to RUNNING with an engine launched on the old provider.
-    if (machine.phase() === 'RUNNING') await restartEngine('summary provider changed');
+    if (machine.phase() === 'RUNNING') await restartEngine('summary provider changed', { keepPreferences: true });
   }
 
   async function setAiKey(payload: SetAiKeyPayload): Promise<void> {
@@ -1745,12 +1862,13 @@ export function createController(deps: ControllerDeps): ShellController {
   }
 
   async function sendKeyChange(updates: Record<string, string | null>): Promise<EngineKeySaveResult> {
-    if (currentEngineUrl() === null) {
-      return keyFailure('not-running', 'The engine is not running, so keys can only be entered once it has started.');
-    }
+    // Names are checked before anything else, so an unknown name never reaches the engine (SEC-07).
     const known = knownKeyEnvVars();
     if (Object.keys(updates).some((n) => !known.has(n))) {
       return keyFailure('unknown-key', 'That is not a key the engine knows.');
+    }
+    if (currentEngineUrl() === null) {
+      return keyFailure('not-running', 'The engine is not running, so keys can only be entered once it has started.');
     }
     const locked = engineKeysView.keys.find((row) => row.lock !== null && row.envVars.some((v) => v in updates));
     if (locked?.lock !== undefined && locked.lock !== null) return keyFailure('locked', locked.lock);
@@ -1799,7 +1917,7 @@ export function createController(deps: ControllerDeps): ShellController {
     log.info(`engine settings saved: ${Object.keys(payload.patch).join(', ')}`);
     await refreshEngineSettings();
     if (machine.phase() === 'RUNNING') {
-      void restartEngine('engine settings changed').catch((err: unknown) => {
+      void restartEngine('engine settings changed', { keepPreferences: true }).catch((err: unknown) => {
         log.error(err instanceof Error ? err : String(err));
       });
       return { ok: true, restarting: true, invalid: {}, message: 'Restarting the engine to apply settings…' };
@@ -1887,7 +2005,8 @@ export function createController(deps: ControllerDeps): ShellController {
           void handleCrash(e);
         }
       });
-      await refreshAiStatus();
+      // Background: the safeStorage probe can wait on a Keychain prompt and must not hold up start().
+      void refreshAiStatus().then(() => emitNow());
       await refreshEngineSettings();
       engineKeysView = fallbackEngineKeys(
         await savedEnvKeyNames(),
@@ -1899,6 +2018,10 @@ export function createController(deps: ControllerDeps): ShellController {
         await runBoot();
       } catch (err) {
         fail(err, 'start');
+      }
+      if (deps.startupNotice !== undefined && !shuttingDown) {
+        addNotice(deps.startupNotice);
+        if (machine.phase() === 'RUNNING') ui.showSetup();
       }
     },
     phase: () => machine.phase(),

@@ -203,6 +203,13 @@ describe('check: cheap path', () => {
     expect(co.count('fetch')).toBe(0);
   });
 
+  it('a timed-out ls-remote means offline too and never starts a second, longer fetch (FD-04)', async () => {
+    const { co, mgr } = setup();
+    co.lsRemoteResult = new GitError('GIT_TIMEOUT', 'timed out after 30000ms');
+    expect(await mgr.check({ interactive: true })).toEqual({ kind: 'offline' });
+    expect(co.count('fetch')).toBe(0);
+  });
+
   it('a non-network ls-remote failure falls through to fetch', async () => {
     const { co, mgr } = setup();
     co.lsRemoteResult = new GitError('GIT_FAILED', 'weird');
@@ -295,6 +302,29 @@ describe('check: behind', () => {
     if (r.kind !== 'available') throw new Error('expected available');
     expect(r.disclosure.needsReset).toBe(true);
     expect(r.disclosure.commitCount).toBe(0);
+  });
+
+  it('reports the true removed-commit count, not the capped list length', async () => {
+    const { co, mgr } = setup();
+    co.headSha = SHA_C;
+    co.targetSha = SHA_B;
+    co.behind = 0;
+    co.isAncestor = false;
+    co.countValue = 812;
+    const r = await mgr.check({ interactive: true });
+    if (r.kind !== 'available') throw new Error('expected available');
+    expect(r.disclosure.removedCommits).toBe(812);
+    expect(co.count('countCommits')).toBe(1);
+  });
+
+  it('commitCount stays the true behind count when the list is truncated', async () => {
+    const { co, mgr } = setup();
+    co.behind = 500;
+    co.log = { commits: [commit(1)], truncated: true };
+    const r = await mgr.check({ interactive: true });
+    if (r.kind !== 'available') throw new Error('expected available');
+    expect(r.disclosure.commitCount).toBe(500);
+    expect(r.disclosure.truncated).toBe(true);
   });
 
   it('gates on minShell: blocked-by-shell carries the disclosure', async () => {

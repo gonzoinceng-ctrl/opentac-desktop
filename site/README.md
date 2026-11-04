@@ -107,3 +107,7 @@ Pages project is **not** connected to Git:
 permissions policy, strict CSP: `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self';
 connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`), `_redirects`, `site.webmanifest`,
 `404.html`, `favicon.ico`.
+
+## Release check
+
+`node site/check-live.mjs --base https://opentac.icu [--base https://opentac.pages.dev]` requires every built page and every URL the desktop app opens to answer 2xx, and that the deployed home page is not stale (placeholder vs. screenshots in src). Run it after each deploy and before cutting a release.

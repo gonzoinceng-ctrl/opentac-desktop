@@ -47,6 +47,11 @@ export interface SettingDef {
   booleanStyle?: 'true-false';
   /** A caution shown with the field. */
   warning?: string;
+  /**
+   * When the warning applies: 'zero' once the value is 0, 'on' once a boolean is switched on. Without
+   * it the warning always shows.
+   */
+  warnWhen?: 'zero' | 'on';
   check?: SettingCheck;
 }
 
@@ -70,6 +75,8 @@ export interface CctvRegion {
 export interface SettingGroup {
   id: string;
   title: string;
+  /** Lowercase noun phrase for the Save button ("Save camera settings"); defaults to the lowercased title. */
+  saveLabel?: string;
   description: string;
   settings: SettingDef[];
   regions?: CctvRegion[];
@@ -80,6 +87,7 @@ const S = true as const;
 const voice: SettingGroup = {
   id: 'voice',
   title: 'Voice',
+  saveLabel: 'voice',
   description: 'Models and behaviour of voice control (OpenAI Realtime and Gemini Live).',
   settings: [
     {
@@ -173,6 +181,7 @@ const voice: SettingGroup = {
       default: 'false',
       warning:
         'Privacy: this writes your spoken and typed words to a file on this Mac that is never deleted automatically. Turn it off and delete the file when you are done debugging.',
+      warnWhen: 'on',
       requiresRestart: S,
     },
     {
@@ -189,6 +198,7 @@ const voice: SettingGroup = {
 const spend: SettingGroup = {
   id: 'limits',
   title: 'Spend and rate limits',
+  saveLabel: 'spend and rate limit',
   description: 'Guards against runaway requests. They are per-install safety nets, not billing caps.',
   settings: [
     {
@@ -201,6 +211,7 @@ const spend: SettingGroup = {
       max: 100000,
       default: '30',
       warning: '0 turns the guard off completely.',
+      warnWhen: 'zero',
       requiresRestart: S,
     },
     {
@@ -213,6 +224,7 @@ const spend: SettingGroup = {
       max: 100000,
       default: '30',
       warning: '0 turns the guard off completely.',
+      warnWhen: 'zero',
       requiresRestart: S,
     },
     {
@@ -225,6 +237,7 @@ const spend: SettingGroup = {
       max: 100000,
       default: '120',
       warning: '0 turns the guard off completely.',
+      warnWhen: 'zero',
       requiresRestart: S,
     },
     {
@@ -255,6 +268,7 @@ const spend: SettingGroup = {
 const feeds: SettingGroup = {
   id: 'feeds',
   title: 'Data feeds',
+  saveLabel: 'data feed',
   description: 'Where live data comes from and how it is filtered.',
   settings: [
     {
@@ -460,6 +474,7 @@ export const CCTV_REGIONS: readonly CctvRegion[] = [
 const cctv: SettingGroup = {
   id: 'cctv',
   title: 'CCTV cameras',
+  saveLabel: 'camera',
   description: 'Which public camera packs load and how many cameras each may contribute.',
   settings: [
     {

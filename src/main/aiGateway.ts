@@ -354,11 +354,12 @@ export interface CreateAiGatewayOptions {
   /** Base URL overrides per provider (tests). */
   endpoints?: Partial<Record<AiProvider, string>>;
   /**
-   * Per-launch shared secret. When set, POST /v1/responses must carry it in the
+   * Per-launch shared secret (required). POST /v1/responses must carry it in the
    * x-opentac-gateway-token header; the launcher's fetch interceptor adds it. Stops any other local
-   * process or web page from spending the configured provider keys.
+   * process or web page from spending the configured provider keys. GET /healthz reports the
+   * active provider only to a caller that presents it too.
    */
-  authToken?: string;
+  authToken: string;
 }
 
 interface RequestContext {
@@ -456,6 +457,9 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 export function createAiGateway(opts: CreateAiGatewayOptions): AiGateway {
+  if (typeof opts.authToken !== 'string' || opts.authToken === '') {
+    throw new Error('createAiGateway requires a non-empty authToken');
+  }
   const log = opts.log.scope('aiGateway');
   const fetchImpl: typeof fetch = opts.fetchImpl ?? ((input, init) => fetch(input, init));
   const inflight = new Set<AbortController>();
@@ -802,19 +806,18 @@ export function createAiGateway(opts: CreateAiGatewayOptions): AiGateway {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const path = (req.url ?? '').split('?')[0];
+      const presented = req.headers['x-opentac-gateway-token'];
+      const authed = typeof presented === 'string' && timingSafeEqualStr(presented, opts.authToken);
       if (req.method === 'GET' && path === '/healthz') {
-        sendJson(res, 200, { ok: true, provider: opts.getConfig().provider });
+        // Liveness for anyone; the provider name only for a caller holding the token (SEC-02).
+        sendJson(res, 200, authed ? { ok: true, provider: opts.getConfig().provider } : { ok: true });
         return;
       }
       if (req.method === 'POST' && path === '/v1/responses') {
-        if (opts.authToken) {
-          const presented = req.headers['x-opentac-gateway-token'];
-          const ok = typeof presented === 'string' && timingSafeEqualStr(presented, opts.authToken);
-          if (!ok) {
-            log.warn('rejected /v1/responses request without a valid gateway token');
-            sendJson(res, 401, { error: 'OpenTac AI gateway: missing or invalid gateway token' });
-            return;
-          }
+        if (!authed) {
+          log.warn('rejected /v1/responses request without a valid gateway token');
+          sendJson(res, 401, { error: 'OpenTac AI gateway: missing or invalid gateway token' });
+          return;
         }
         await handleResponses(req, res);
         return;

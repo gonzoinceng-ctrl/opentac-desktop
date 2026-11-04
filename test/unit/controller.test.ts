@@ -17,6 +17,8 @@ import {
   isAllowedTransition,
   isAutomaticCheckDue,
   isQuietlySkipped,
+  readableVersionLabel,
+  RESTART_OVERLAY_DELAY_MS,
   resolveDevOverrides,
   resolveEngineOverrides,
   type ControllerDeps,
@@ -77,6 +79,7 @@ interface Harness {
 }
 
 interface HarnessOptions {
+  startupNotice?: string;
   state?: Partial<ShellState>;
   env?: NodeJS.ProcessEnv;
   isPackaged?: boolean;
@@ -158,6 +161,7 @@ function makeHarness(o: HarnessOptions = {}): Harness {
     paths,
     log,
     initialState,
+    ...(o.startupNotice !== undefined ? { startupNotice: o.startupNotice } : {}),
     saveState: async (s) => {
       saved.push(s);
       trace.push(`save:rollback=${s.rollbackCommit === null ? 'null' : s.rollbackCommit.slice(0, 1)}`);
@@ -459,9 +463,9 @@ describe('boot', () => {
     expect(h.controller.state().remoteUrl).toBe('https://github.com/o/r.git');
   });
 
-  it('points origin at the override remote when the checkout already exists', async () => {
+  it('does not rewrite origin for the one-run override remote (FD-12)', async () => {
     const h = await boot({ env: { OPENTAC_ENGINE_REMOTE: 'file:///tmp/mirror.git' } });
-    expect(h.checkout.remote).toBe('file:///tmp/mirror.git');
+    expect(h.checkout.remote).toBe('https://github.com/o/r.git');
   });
 
   it('logs dev overrides only when unpackaged', async () => {
@@ -584,6 +588,8 @@ describe('port pinning', () => {
     await h.controller.start();
     await h.controller.action('changePort');
     expect(h.controller.phase()).toBe('RUNNING');
+    // 4173 is the well-known default: never offered, even when free (FD-11).
+    h.busyPorts.delete(4173);
     expect(h.server.starts[0]?.port).toBe(4174);
     expect(h.controller.state().lastPort).toBe(4174);
   });
@@ -649,6 +655,18 @@ describe('port pinning', () => {
 });
 
 describe('crash policy', () => {
+  it('keeps the setup window hidden during the automatic restart, then says what happened (FD-06)', async () => {
+    const h = await boot();
+    const showsBefore = h.ui.count('showSetup');
+    h.server.emit({ type: 'exit', code: null, signal: 'SIGKILL', expected: false });
+    await flush();
+    expect(h.phases.slice(-3)).toEqual(['CRASHED', 'STARTING', 'RUNNING']);
+    // Exactly one showSetup after the crash: the closing notice, not a flash of the progress panel.
+    expect(h.ui.count('showSetup') - showsBefore).toBe(1);
+    expect(h.controller.publicState().notices.join(' ')).toContain('SIGKILL');
+    expect(h.controller.publicState().notices.join(' ')).toContain('restarted');
+  });
+
   it('restarts automatically once, then waits for the user inside 60 s', async () => {
     const h = await boot();
     expect(h.server.starts).toHaveLength(1);
@@ -802,6 +820,52 @@ describe('background update checks', () => {
     h.update.results = [{ kind: 'up-to-date', label: 'v0.1.0' }];
     await h.controller.checkForEngineUpdates();
     expect(h.ui.calls.some((c) => c.startsWith('notify:'))).toBe(true);
+    expect(h.controller.phase()).toBe('RUNNING');
+  });
+
+  it('names the update server, not GitHub, when the remote is not GitHub (FD-10)', async () => {
+    const h = await boot({ env: { OPENTAC_ENGINE_REMOTE: 'https://mirror.example.org/x.git' } });
+    h.update.results = [{ kind: 'offline' }];
+    await h.controller.checkForEngineUpdates();
+    expect(h.controller.publicState().notices[0]).toBe(
+      "Couldn't reach the update server. The installed version keeps working.",
+    );
+  });
+
+  it('up-to-date message carries its headline and a readable label (EU-08)', () => {
+    expect(readableVersionLabel('7322ce5')).toBe('commit 7322ce5');
+    expect(readableVersionLabel('7322ce5 (stable-2026.11.01)')).toBe('commit 7322ce5 (stable-2026.11.01)');
+    expect(readableVersionLabel('v0.3.0')).toBe('v0.3.0');
+  });
+
+  it('Restart Server does not flash the setup window, clears the log tail and says the engine is ready (DU-07)', async () => {
+    const h = await boot();
+    h.ring.push('[stderr] stale line from the previous run');
+    const before = h.ui.count('showSetup');
+    await h.controller.action('restartServer');
+    expect(h.controller.phase()).toBe('RUNNING');
+    expect(h.ui.count('showSetup')).toBe(before);
+    expect(h.ring.lines().join('\n')).not.toContain('stale line');
+    expect(h.logs.join('\n')).toMatch(/STARTING -> RUNNING.*engine is ready/);
+    // A timer left over from the fast restart must not raise the window later.
+    await h.clock.advance(RESTART_OVERLAY_DELAY_MS + 100);
+    expect(h.ui.count('showSetup')).toBe(before);
+  });
+
+  it('a slow Restart Server raises the setup window after the delay (DU-07)', async () => {
+    const h = await boot();
+    const before = h.ui.count('showSetup');
+    let release: () => void = () => undefined;
+    h.server.stopGate = new Promise<void>((r) => {
+      release = r;
+    });
+    const p = h.controller.action('restartServer');
+    await flush();
+    expect(h.ui.count('showSetup')).toBe(before);
+    await h.clock.advance(RESTART_OVERLAY_DELAY_MS + 50);
+    expect(h.ui.count('showSetup')).toBe(before + 1);
+    release();
+    await p;
     expect(h.controller.phase()).toBe('RUNNING');
   });
 
@@ -1034,6 +1098,12 @@ describe('applying an update', () => {
     expect(h.install.count('install')).toBe(1);
     expect(h.phases.slice(-6)).toEqual(['UPDATING', 'STARTING', 'ROLLING_BACK', 'INSTALLING', 'STARTING', 'RUNNING']);
     expect(h.controller.phase()).toBe('RUNNING');
+    // The reinstall inside a rollback is described as restoring, not as a first-time install (FD-08).
+    const restoring = h.ui.pushed.filter((p) => p.phase === 'INSTALLING' && p.rollingBack === true);
+    expect(restoring.length).toBeGreaterThan(0);
+    expect(restoring[0]?.message).toContain('Restoring the previous version');
+    expect(h.controller.publicState().rollingBack).toBeUndefined();
+    expect(h.controller.publicState().notices.join(' ')).toContain('marked as skipped');
   });
 
   it('a failed install after the checkout rolls back (INSTALLING -> ROLLING_BACK)', async () => {
@@ -1323,6 +1393,14 @@ describe('AI provider wiring', () => {
     const h = makeHarness();
     live.push(h);
     h.secrets.isAvailable = false;
+    await h.controller.start();
+    expect(h.controller.publicState().ai.encryptionAvailable).toBe(false);
+  });
+
+  it('start() does not wait for a secure-storage probe that never answers (Keychain prompt)', async () => {
+    const h = makeHarness();
+    live.push(h);
+    h.secrets.available = () => new Promise<boolean>(() => undefined);
     await h.controller.start();
     expect(h.controller.publicState().ai.encryptionAvailable).toBe(false);
   });
@@ -1826,7 +1904,33 @@ describe('app settings', () => {
   });
 });
 
+describe('damaged state file (FD-07)', () => {
+  it('tells the user once that the settings were reset', async () => {
+    const h = await boot({ startupNotice: 'OpenTac settings file was damaged and was reset.' });
+    expect(h.controller.publicState().notices).toEqual(['OpenTac settings file was damaged and was reset.']);
+    expect(h.ui.count('showSetup')).toBeGreaterThan(0);
+  });
+  it('says nothing when the file was fine', async () => {
+    const h = await boot();
+    expect(h.controller.publicState().notices).toEqual([]);
+  });
+});
+
 describe('engine settings (.env)', () => {
+  it('a settings save keeps Preferences open through the restart (SET-01)', async () => {
+    const h = await boot({
+      readEngineSettings: async () => ({ values: {}, set: {} }),
+      writeEngineSettings: async () => undefined,
+    });
+    await h.controller.action('openPreferences');
+    expect(h.controller.publicState().preferencesOpen).toBe(true);
+    const hides = h.ui.count('hideSetup');
+    await h.controller.saveEngineSettings({ patch: { OPENAI_REALTIME_VOICE: 'cedar' } });
+    await waitFor(() => h.controller.phase() === 'RUNNING' && h.server.starts.length === 2);
+    expect(h.controller.publicState().preferencesOpen).toBe(true);
+    expect(h.ui.count('hideSetup')).toBe(hides);
+  });
+
   it('saving while RUNNING writes the patch, goes RESTARTING then RUNNING and refreshes the view', async () => {
     const writes: Array<Record<string, string | null>> = [];
     let stored: { values: Record<string, string>; set: Record<string, boolean> } = { values: {}, set: {} };
@@ -2046,7 +2150,10 @@ describe('engine keys', () => {
       ok: false,
       code: 'not-running',
     });
+    // Unknown names are refused even while idle, and never reach the engine.
+    expect(await idle.controller.saveEngineKey({ values: { PATH: '/x' } })).toMatchObject({ ok: false, code: 'unknown-key' });
     const h = await boot({ engineKeys: keys });
+    expect(await h.controller.saveEngineKey({ values: { PATH: '/x' } })).toMatchObject({ ok: false, code: 'unknown-key' });
     expect(await h.controller.saveEngineKey({ values: { HOST: '0.0.0.0' } })).toMatchObject({ ok: false, code: 'unknown-key' });
     expect(keys.saves).toEqual([]);
   });
