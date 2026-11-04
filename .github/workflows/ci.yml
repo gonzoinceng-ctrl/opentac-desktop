@@ -21,7 +21,7 @@ jobs:
       # dugite's postinstall downloads its git build here; cached below so CI does not re-download it every run.
       DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read pinned Node version
         id: nv
@@ -53,7 +53,7 @@ jobs:
       # Unsigned pack: never look for a signing identity or notarize on CI runs of main and pull requests.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read pinned Node version
         id: nv
