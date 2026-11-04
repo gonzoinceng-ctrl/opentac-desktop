@@ -74,8 +74,8 @@ do_secrets() {
   gh auth token | gh secret set ENGINE_PUSH_TOKEN --repo "$MIRROR_REPO" --env "$MIRROR_ENV"
 
   say "Secrets now set:"
-  gh secret list --repo "$APP_REPO"
-  gh secret list --repo "$MIRROR_REPO" --env "$MIRROR_ENV"
+  GH_PAGER=cat gh secret list --repo "$APP_REPO"
+  GH_PAGER=cat gh secret list --repo "$MIRROR_REPO" --env "$MIRROR_ENV"
 }
 
 do_dns() {
