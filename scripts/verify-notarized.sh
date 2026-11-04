@@ -50,12 +50,23 @@ $out"
 $out"
   fi
 
-  if out="$(xcrun stapler validate "$app" 2>&1)"; then
-    ok "$label: stapler validate"
-  else
+  # stapler validate contacts Apple's CloudKit; a dropped connection reports error 68 on a correctly
+  # stapled app (seen on the first v0.1.0 release run). Three attempts, 20 s apart, before calling it a failure.
+  local attempt
+  for attempt in 1 2 3; do
+    if out="$(xcrun stapler validate "$app" 2>&1)"; then
+      ok "$label: stapler validate"
+      break
+    fi
+    if [ "$attempt" -lt 3 ] && grep -q -E 'network connection|CloudKit|Error 68' <<<"$out"; then
+      echo "note: $label: stapler validate could not reach Apple (attempt $attempt); retrying in 20 s" >&2
+      sleep 20
+      continue
+    fi
     fail "$label: stapler validate failed (no notarization ticket stapled?):
 $out"
-  fi
+    break
+  done
 }
 
 check_app "$1" "app"

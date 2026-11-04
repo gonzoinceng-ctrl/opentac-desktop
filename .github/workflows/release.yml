@@ -168,7 +168,18 @@ jobs:
             echo "::error::expected release/ to hold exactly 1 dmg, 1 zip and 2 blockmaps (single architecture); found: ${dmgs[*]} ${zips[*]} ${maps[*]}"
             exit 1
           fi
-          scripts/verify-notarized.sh "release/${OUT_DIR}/OpenTac.app" "${dmgs[0]}"
+          # `stapler validate` asks Apple's CloudKit for the ticket; on the first v0.1.0 run that call
+          # dropped ("The network connection was lost", stapler error 68) on a build that was fully
+          # notarized. The checks are read-only and fast, so re-run the whole verifier up to three times.
+          for attempt in 1 2 3; do
+            if scripts/verify-notarized.sh "release/${OUT_DIR}/OpenTac.app" "${dmgs[0]}"; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning title=Verification attempt ${attempt} failed::retrying in 30 seconds"
+              sleep 30
+            fi
+          done
+          echo "::error title=Verification failed::three attempts failed; see the log above"
+          exit 1
 
       - name: Electron fuses (informational)
         continue-on-error: true
