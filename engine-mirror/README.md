@@ -99,7 +99,9 @@ holds the group for its whole duration.
 The compatibility smoke is **pending until the app has an e2e suite**: the `smoke` job checks whether the
 app's `package.json` has an `e2e` script. Without one it reports `PENDING` in the gate report and passes. As soon
 as the script exists it runs `npm run e2e` with `OPENTAC_E2E_APP`, `OPENTAC_ENGINE_REMOTE`
-(this mirror), `OPENTAC_ENGINE_REF` (the candidate SHA) and a temporary `OPENTAC_DATA_DIR`, and gates on it. The Intel
+(this mirror), `OPENTAC_ENGINE_REF` (the candidate SHA) and a temporary `OPENTAC_DATA_DIR`, and gates on it.
+The app's `test/e2e/gate.spec.ts` is the suite that honours those variables: it spawns the built .app against the
+candidate SHA from an empty data directory and checks clone, install, start, the key-setup contract and a clean quit. The Intel
 leg (`macos-15-intel`) is `continue-on-error` until it has been stable for a while.
 
 ## Secrets and variables

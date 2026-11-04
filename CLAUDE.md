@@ -62,7 +62,8 @@ npm run build               # tsc main, esbuild preloads (.cjs) + setup renderer
 npm run dev                 # build, then `electron .` against vendor/ node
 npm run typecheck           # tsc --noEmit for main, preload, renderer (also `npm run lint`)
 npm test                    # vitest run: unit + integration (temp dirs, fixture git repo)
-npm run e2e                 # playwright _electron smoke (unpackaged build, OPENTAC_DATA_DIR)
+npm run e2e                 # playwright: fixture suite (unpackaged build) or, with OPENTAC_E2E_APP set, the
+                            # packaged-app gate smoke against a real engine commit (test/e2e/gate.spec.ts)
 npm run pack                # build + unsigned --dir app in release/
 npm run dist                # build + dmg/zip, no publish (signs/notarizes if CSC_*/APPLE_* set)
 npm run release             # build + dmg/zip, --publish always (manual only; CI builds with --publish never and leaves a draft)
@@ -72,7 +73,8 @@ Also `test:watch`, `make-icon`; mirror tests: `npm test` in `engine-mirror/`.
 Website: `site/build.mjs` builds `site/dist/` (`site:build`/`site:dev` wrap it).
 
 Unpackaged runs are named "OpenTac Dev" (own Keychain item and default data dir; never collide
-with the installed app). Dev env overrides: `OPENTAC_DATA_DIR=/tmp/gev-data` (fresh first run),
+with the installed app). Env overrides: `OPENTAC_DATA_DIR=/tmp/gev-data` (fresh first run; moves the
+Chromium profile, logs and single-instance lock there too, in every build),
 `OPENTAC_ENGINE_REMOTE`, `OPENTAC_ENGINE_REF` (point at another remote/ref for
 one run), `OPENTAC_LAUNCHER_OVERRIDE`, `OPENTAC_NODE_OVERRIDE`,
 `OPENTAC_NPM_CLI_OVERRIDE` (fakes for tests; unpackaged builds only),
@@ -108,7 +110,7 @@ that one spawn then stripped; a plain launch ignores it).
   `sha256sums.mjs`, `verify-bundle.sh`, `verify-notarized.sh`),
   `check-toolchain-updates.mjs`; tests in `scripts/test/`.
 - `test/` — `unit/`, `integration/` (fixture git repo, fake launcher/npm),
-  `e2e/` (Playwright `_electron`), `fixtures/`, `helpers/`.
+  `e2e/` (Playwright: `app.spec.ts` via `_electron`, `gate.spec.ts` spawns a built .app), `fixtures/`, `helpers/`.
 - `engine-mirror/` — the **mirror repo's contents** (default branch
   `opentac-ci`): workflows, `ci/` contract checks and tests, `manifest/`,
   `RELEASES.md`, `bootstrap.sh`. Published to `opentac-engine`, never run from

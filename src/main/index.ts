@@ -57,9 +57,11 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // under one code signature raises a password prompt for the other (DECISIONS 2026-11-04).
 app.setName(app.isPackaged ? 'OpenTac' : 'OpenTac Dev');
 
-// A dev/test run with OPENTAC_DATA_DIR keeps Chromium's profile and the logs inside that directory
-// so it neither touches nor collides with a real installation (single-instance lock included).
-if (!app.isPackaged && (process.env['OPENTAC_DATA_DIR'] ?? '') !== '') {
+// A run with OPENTAC_DATA_DIR keeps Chromium's profile and the logs inside that directory so it
+// neither touches nor collides with a real installation (single-instance lock included). Packaged
+// builds honour it too: the engine mirror's gate runs the built app this way against a fresh
+// directory (DECISIONS 2026-11-04, "the gate smoke drives the packaged app").
+if ((process.env['OPENTAC_DATA_DIR'] ?? '') !== '') {
   const dataDir = resolve(process.env['OPENTAC_DATA_DIR'] as string);
   app.setPath('userData', join(dataDir, 'electron-user-data'));
   app.setPath('logs', join(dataDir, 'logs'));

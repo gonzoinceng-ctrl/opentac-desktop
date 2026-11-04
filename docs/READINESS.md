@@ -74,6 +74,7 @@ Fresh-Mac open test and x64-under-Intel test: pending-owner.
 | Two consecutive weekly intakes green; one deliberate contract break; one forced promote | pending-owner / pending-CI (contract breaks are proven by 33 local tests; the weekly soak needs calendar time) |
 | Disclosure shows gate run + canary days on `stable` (the canary is a 72-hour trial period where a new engine version is run and checked before it is promoted to everyone); untested banner elsewhere | done (renderer + update manager tests) |
 | Engine update: disclosure, ff, conditional reinstall, restart, reload | done (integration `update-flow` + e2e test 4 against the fixture mirror); manual against the real mirror pending-owner |
+| Gate smoke runs the built app against the real engine commit (clone, install, start, key contract, quit) | done (`test/e2e/gate.spec.ts`; first mirror intake on 2026-11-04 showed the fixture suite had been running in its place) |
 | Dirty tree blocks ff; Reset preserves `.env` and `.gev-cache` | done (integration tests) |
 | Rollback after failed post-update start | done (integration test with `OPENTAC_FAIL_START_ONCE`) |
 | Channel switch both directions | done in code + unit tests; manual QA §4 |

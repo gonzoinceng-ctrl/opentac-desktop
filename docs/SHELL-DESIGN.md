@@ -263,6 +263,15 @@ Preferences/About, buttons reachable by keyboard.
   main window URL matches `http://127.0.0.1:\d+/`, `<canvas>` exists on the fake page,
   `window.openTac.getVersions()` resolves, external link opens no new window, menu-driven
   "Check for Engine Updates" shows the disclosure, quit leaves no child process.
+- Gate smoke (`test/e2e/gate.spec.ts`, selected by `npm run e2e` when `OPENTAC_E2E_APP` is set): the
+  engine mirror's gate hands over a BUILT .app, the mirror URL, one engine SHA and an empty
+  `OPENTAC_DATA_DIR`. A packaged build has the Node-inspector fuse off, so Playwright cannot attach;
+  the spec spawns the executable like a user would and reads what an install shows: phase log
+  CLONING → INSTALLING → STARTING → RUNNING within 15 min, `state.json` `installedCommit` equals the
+  SHA, the engine page answers 200, `/api/setup/status` 200 with the local Origin, the keyless
+  `/api/celestrak/stations` route exists, a `POST /api/setup/keys` save restarts the engine in place
+  without a shell phase change, and SIGTERM quits cleanly with the engine port closed
+  ("stopping launcher" and "controller shut down" logged). Update, rollback and UI flows stay with the fixture suite.
 
 ## 14. Settings (`engineKeys.ts`, `envSettings.ts`, `src/shared/appSettings.ts`, Preferences tabs)
 
